@@ -205,21 +205,78 @@ python install.py --no-net   # 跳过上游补下载（技能随包分发，通�
 
 ### 4.3 挂载到 DSH
 
-安装器会打印当前状态。若尚未挂载，手工两步：
+安装器会打印当前状态。若尚未挂载，需要改 profile 的 `package.json` 并建立链接。
 
-1. profile 的 `package.json`：`dependencies` 加 `"dsh-workbench": "link:<本插件绝对路径>"`，
-   `dsh.profile.bundles` 数组加 `"dsh-workbench"`
-2. profile 目录跑 `pnpm install` 建立 link，然后**完全退出 DSH 再启动**
-   （client 半按模块 id 加载，必须重启进程）
+**先做这一步，两种情况都要**：**完全退出 DSH**（关窗口不够，托盘也要退，
+确认任务管理器里没有 DSH 进程）。client 半按模块 id 加载，必须重启进程才生效；
+而且 DSH 运行时**会占用 profile 目录**，不停掉会导致下一步写文件失败。
 
-重启后左侧栏会出现「公众号工作台」与「生图工作台」。
+profile 位置：`%USERPROFILE%\.dsh\profiles\desktop\`
+
+改 `package.json`，两处：
+
+```json
+{
+  "dependencies": {
+    "dsh-workbench": "link:C:/path/to/dsh-workbench"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": ["dsh-workbench"]
+    }
+  }
+}
+```
+
+> 路径用正斜杠 `/`，或写成转义后的双反斜杠 `\\`。`bundles` 是往已有数组里**追加**，
+> 别把原有项覆盖掉。
+
+然后用下面任一方式建立链接。
+
+#### 方式 A：pnpm install（常规）
+
+在 profile 目录执行：
+
+```bash
+pnpm install
+```
+
+#### 方式 B：手工建目录联接（免 pnpm，推荐作为备选）
+
+本插件**零运行时依赖**（`package.json` 没有 `dependencies`，四个 peer 全部 optional），
+`pnpm install` 在这里只干一件事：把插件目录链到 `node_modules`。这一步手工也能做：
+
+```powershell
+cmd /c mklink /J "%USERPROFILE%\.dsh\profiles\desktop\node_modules\dsh-workbench" "C:\path\to\dsh-workbench"
+```
+
+`/J` 是目录联接（junction），**不需要管理员权限**。若提示已存在，先删掉旧的再建。
+
+做完启动 DSH，左侧栏会出现「公众号工作台」与「生图工作台」。
+
+#### 如果 pnpm 报 EPERM
+
+```
+[EPERM] rename '...\package.json.358186889' -> '...\package.json'
+```
+
+这不是权限坏了，是 **`package.json` 被占用**。pnpm 改文件的方式是「写临时文件 → rename 覆盖」，
+rename 要求目标文件没有任何进程持有句柄。按顺序排查：
+
+1. **DSH 没退干净**（最常见）—— 关掉托盘图标，任务管理器确认无 DSH 进程
+2. **杀毒软件实时防护**在扫刚写的临时文件 —— 临时关掉再试
+3. **编辑器或资源管理器**打开着该文件 / 该目录 —— 关掉
+4. 还不行就直接用上面的**方式 B**，完全绕开 pnpm
 
 ### 4.4 验证
 
 ```bash
-python tools/check-all.py       # 全量自检
-python tools/build.py           # 刷新数据与界面
+python install.py --check       # 环境自检，不做任何改动
+python tools/build.py           # 刷新数据与界面（含文档与草稿校验）
 ```
+
+两项都应正常退出（`build.py` 最后打印「完成。重启 DSH 后生效。」）。
+若 `build.py` 报错，说明本地数据或技能库有问题，按报错提示处理。
 
 ---
 
