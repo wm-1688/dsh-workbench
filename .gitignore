@@ -29,5 +29,9 @@ aws.env
 Thumbs.db
 desktop.ini
 
-# ��װ�����ɵı��棨������·����
+# 安装后生成的报告（含本机路径，不入库）
 install-report.md
+
+# 构建产物（本地抓取的快照数据，不入库）
+lib/materials.snapshot.json
+lib/topics.generated.json
