@@ -1,0 +1,86 @@
+{
+  "rows": [
+    {
+      "file": "代表作-北漂押一付三.md",
+      "chars": 4277,
+      "paras": 186,
+      "bold": 0,
+      "h2": 0,
+      "h3": 0,
+      "quote": 0,
+      "hr": 0,
+      "list": 0,
+      "avg_para": 23.0
+    },
+    {
+      "file": "代表作-她那么丑凭什么让王菲大哭.md",
+      "chars": 2820,
+      "paras": 110,
+      "bold": 0,
+      "h2": 0,
+      "h3": 0,
+      "quote": 0,
+      "hr": 0,
+      "list": 0,
+      "avg_para": 25.6
+    },
+    {
+      "file": "代表作-如何写出100万+爆款.md",
+      "chars": 4462,
+      "paras": 212,
+      "bold": 0,
+      "h2": 0,
+      "h3": 0,
+      "quote": 0,
+      "hr": 0,
+      "list": 1,
+      "avg_para": 21.0
+    },
+    {
+      "file": "代表作-婚姻死于无话.md",
+      "chars": 2571,
+      "paras": 111,
+      "bold": 0,
+      "h2": 0,
+      "h3": 0,
+      "quote": 0,
+      "hr": 0,
+      "list": 0,
+      "avg_para": 23.2
+    },
+    {
+      "file": "代表作-情商高就是好好说话.md",
+      "chars": 5179,
+      "paras": 134,
+      "bold": 0,
+      "h2": 0,
+      "h3": 0,
+      "quote": 0,
+      "hr": 0,
+      "list": 1,
+      "avg_para": 38.6
+    },
+    {
+      "file": "代表作-我是因为你才爱上世界.md",
+      "chars": 4315,
+      "paras": 202,
+      "bold": 0,
+      "h2": 0,
+      "h3": 0,
+      "quote": 0,
+      "hr": 0,
+      "list": 10,
+      "avg_para": 21.4
+    }
+  ],
+  "total": {
+    "chars": 23624,
+    "paras": 955,
+    "avgPara": 24.7,
+    "boldPer1k": 0.0,
+    "h2": 0,
+    "h3": 0,
+    "quoteLines": 0,
+    "hr": 0
+  }
+}

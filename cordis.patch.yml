@@ -1,0 +1,8 @@
+# dsh-workbench · 最小验证 bundle
+#
+# 形状照抄自 @changfenhuang/dsh-genui 的 cordis.patch.yml：
+# 一个 insert 列表，每项声明 id + 包名。包名由 profile 的 node_modules 解析，
+# 所以本地 link 安装时，这里的 name 必须是 package.json 里的 name。
+- insert:
+    - id: workbench
+      name: 'dsh-workbench'

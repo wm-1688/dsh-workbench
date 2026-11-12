@@ -1,0 +1,105 @@
+{
+  "_comment": "依赖技能清单。install.py 按此表从各上游仓库按需下载，仓库本身不打包这些技能。",
+  "_schema": {
+    "name": "技能目录名（装到 $DSH_HOME/skills/<name>）",
+    "repo": "GitHub owner/repo",
+    "branch": "分支名（各仓库不同，勿统一写 main）",
+    "path": "仓库内该技能的目录，空串表示仓库根目录就是技能",
+    "license": "上游许可证（仅记录，下载时提示用）",
+    "required": "true=插件硬依赖，缺了功能会报错"
+  },
+  "repos": {
+    "aiworkskills/wechat-article-skills": {
+      "branch": "main",
+      "license": "Apache-2.0",
+      "homepage": "https://aiworkskills.cn"
+    },
+    "redfox-data/redfox-community": {
+      "branch": "main",
+      "license": null,
+      "homepage": null
+    },
+    "KKKKhazix/khazix-skills": {
+      "branch": "main",
+      "license": "MIT",
+      "homepage": null
+    },
+    "yang0/handraw-style": {
+      "branch": "master",
+      "license": "MIT (with Attribution)",
+      "homepage": null
+    },
+    "op7418/Humanizer-zh": {
+      "branch": "main",
+      "license": "MIT",
+      "homepage": null
+    },
+    "larashero3-dotcom/writing-dna-skill": {
+      "branch": "main",
+      "license": "NOASSERTION",
+      "homepage": "https://lieflat.work/skills/writing-dna/"
+    },
+    "BigPengSays/bigpeng-hot-gzh": {
+      "branch": "main",
+      "license": "MIT",
+      "homepage": null
+    }
+  },
+  "skills": [
+    {"name": "aws-wechat-article-assets", "repo": "aiworkskills/wechat-article-skills", "path": "skills/aws-wechat-article-assets", "required": false},
+    {"name": "aws-wechat-article-formatting", "repo": "aiworkskills/wechat-article-skills", "path": "skills/aws-wechat-article-formatting", "required": true},
+    {"name": "aws-wechat-article-images", "repo": "aiworkskills/wechat-article-skills", "path": "skills/aws-wechat-article-images", "required": false},
+    {"name": "aws-wechat-article-main", "repo": "aiworkskills/wechat-article-skills", "path": "skills/aws-wechat-article-main", "required": false},
+    {"name": "aws-wechat-article-publish", "repo": "aiworkskills/wechat-article-skills", "path": "skills/aws-wechat-article-publish", "required": true},
+    {"name": "aws-wechat-article-review", "repo": "aiworkskills/wechat-article-skills", "path": "skills/aws-wechat-article-review", "required": false},
+    {"name": "aws-wechat-article-topics", "repo": "aiworkskills/wechat-article-skills", "path": "skills/aws-wechat-article-topics", "required": true},
+    {"name": "aws-wechat-article-writing", "repo": "aiworkskills/wechat-article-skills", "path": "skills/aws-wechat-article-writing", "required": true},
+    {"name": "aws-wechat-sticker", "repo": "aiworkskills/wechat-article-skills", "path": "skills/aws-wechat-sticker", "required": false},
+
+    {"name": "aihot", "repo": "KKKKhazix/khazix-skills", "path": "aihot", "required": true},
+    {"name": "hv-analysis", "repo": "KKKKhazix/khazix-skills", "path": "hv-analysis", "required": false},
+    {"name": "khazix-writer", "repo": "KKKKhazix/khazix-skills", "path": "khazix-writer", "required": true},
+
+    {"name": "handraw-style", "repo": "yang0/handraw-style", "path": "", "required": true},
+    {"name": "humanizer-zh", "repo": "op7418/Humanizer-zh", "path": "", "required": false},
+    {"name": "bigpeng-hot-gzh", "repo": "BigPengSays/bigpeng-hot-gzh", "path": "", "required": false},
+    {"name": "writing-dna-skill", "repo": "larashero3-dotcom/writing-dna-skill", "path": "", "required": false},
+    {"name": "lieflat-less-ai-tone", "repo": "larashero3-dotcom/writing-dna-skill", "path": "skills/lieflat-less-ai-tone", "required": true},
+
+    {"name": "cn-last30days", "repo": "redfox-data/redfox-community", "path": "skills/cn-last30days", "required": false},
+    {"name": "doubao-websearch", "repo": "redfox-data/redfox-community", "path": "skills/doubao-websearch", "required": false},
+    {"name": "douyin-daily-hot", "repo": "redfox-data/redfox-community", "path": "skills/douyin-daily-hot", "required": false},
+    {"name": "douyin-hot-trend", "repo": "redfox-data/redfox-community", "path": "skills/douyin-hot-trend", "required": false},
+    {"name": "global-ai-news-brief", "repo": "redfox-data/redfox-community", "path": "skills/global-ai-news-brief", "required": false},
+    {"name": "kimi-websearch", "repo": "redfox-data/redfox-community", "path": "skills/kimi-websearch", "required": false},
+    {"name": "multi-copywrite-alchemy", "repo": "redfox-data/redfox-community", "path": "skills/multi-copywrite-alchemy", "required": false},
+    {"name": "multi-rewrite", "repo": "redfox-data/redfox-community", "path": "skills/multi-rewrite", "required": false},
+    {"name": "multi-wordcheck", "repo": "redfox-data/redfox-community", "path": "skills/multi-wordcheck", "required": false},
+    {"name": "toutiao-search", "repo": "redfox-data/redfox-community", "path": "skills/toutiao-search", "required": false},
+    {"name": "trending-hub", "repo": "redfox-data/redfox-community", "path": "skills/trending-hub", "required": false},
+    {"name": "trending-hub-top10", "repo": "redfox-data/redfox-community", "path": "skills/trending-hub-top10", "required": false},
+    {"name": "visual-ops-writer", "repo": "redfox-data/redfox-community", "path": "skills/visual-ops-writer", "required": false},
+    {"name": "wechat-10w-hot", "repo": "redfox-data/redfox-community", "path": "skills/wechat-10w-hot", "required": false},
+    {"name": "wechat-account-analyzer", "repo": "redfox-data/redfox-community", "path": "skills/wechat-account-analyzer", "required": false},
+    {"name": "wechat-cover", "repo": "redfox-data/redfox-community", "path": "skills/wechat-cover", "required": false},
+    {"name": "wechat-fastest-growing", "repo": "redfox-data/redfox-community", "path": "skills/wechat-fastest-growing", "required": false},
+    {"name": "wechat-original-hot", "repo": "redfox-data/redfox-community", "path": "skills/wechat-original-hot", "required": false},
+    {"name": "wechat-prohibited-word", "repo": "redfox-data/redfox-community", "path": "skills/wechat-prohibited-word", "required": true},
+    {"name": "wechat-rewrite", "repo": "redfox-data/redfox-community", "path": "skills/wechat-rewrite", "required": false},
+    {"name": "wechat-search", "repo": "redfox-data/redfox-community", "path": "skills/wechat-search", "required": false},
+    {"name": "wechat-similar-account", "repo": "redfox-data/redfox-community", "path": "skills/wechat-similar-account", "required": false},
+    {"name": "wechat-top-account", "repo": "redfox-data/redfox-community", "path": "skills/wechat-top-account", "required": false},
+    {"name": "wechat-write", "repo": "redfox-data/redfox-community", "path": "skills/wechat-write", "required": false},
+    {"name": "weibo-hot-search", "repo": "redfox-data/redfox-community", "path": "skills/weibo-hot-search", "required": false},
+    {"name": "xiaohongshu-dailytop", "repo": "redfox-data/redfox-community", "path": "skills/xiaohongshu-dailytop", "required": false},
+    {"name": "xiaohongshu-lowtop", "repo": "redfox-data/redfox-community", "path": "skills/xiaohongshu-lowtop", "required": false}
+  ],
+  "no_upstream": [
+    {"name": "collect-source-material", "note": "本项目自建，无公开上游"},
+    {"name": "develop-entertainment-article-angles", "note": "本项目自建，无公开上游"},
+    {"name": "select-entertaining-materials", "note": "本项目自建，无公开上游"},
+    {"name": "write-entertainment-wechat-articles", "note": "本项目自建，无公开上游"},
+    {"name": "deepseek-websearch", "note": "未见公开仓库；可用 multi-* / doubao-websearch 替代"},
+    {"name": "hot-topics", "note": "依赖 vikiboss/60s 新闻 API，但该仓库不含 SKILL.md，无法整目录下载"}
+  ]
+}

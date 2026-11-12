@@ -1,0 +1,116 @@
+{
+  "perArticle": [
+    {
+      "file": "代表作-北漂押一付三.md",
+      "chars": 4277,
+      "sents": 163,
+      "avg_sent": 26.2,
+      "max_sent": 113,
+      "paras": 186,
+      "avg_para": 23.0,
+      "short_pct": 31.3,
+      "long_pct": 9.2,
+      "q": 29,
+      "ex": 0
+    },
+    {
+      "file": "代表作-她那么丑凭什么让王菲大哭.md",
+      "chars": 2820,
+      "sents": 97,
+      "avg_sent": 29.0,
+      "max_sent": 101,
+      "paras": 110,
+      "avg_para": 25.6,
+      "short_pct": 25.8,
+      "long_pct": 10.3,
+      "q": 11,
+      "ex": 8
+    },
+    {
+      "file": "代表作-如何写出100万+爆款.md",
+      "chars": 4462,
+      "sents": 139,
+      "avg_sent": 32.1,
+      "max_sent": 201,
+      "paras": 212,
+      "avg_para": 21.0,
+      "short_pct": 33.1,
+      "long_pct": 16.5,
+      "q": 25,
+      "ex": 14
+    },
+    {
+      "file": "代表作-婚姻死于无话.md",
+      "chars": 2571,
+      "sents": 113,
+      "avg_sent": 22.7,
+      "max_sent": 80,
+      "paras": 111,
+      "avg_para": 23.2,
+      "short_pct": 31.9,
+      "long_pct": 3.5,
+      "q": 14,
+      "ex": 0
+    },
+    {
+      "file": "代表作-情商高就是好好说话.md",
+      "chars": 5179,
+      "sents": 172,
+      "avg_sent": 30.1,
+      "max_sent": 108,
+      "paras": 134,
+      "avg_para": 38.6,
+      "short_pct": 19.2,
+      "long_pct": 16.3,
+      "q": 20,
+      "ex": 2
+    },
+    {
+      "file": "代表作-我是因为你才爱上世界.md",
+      "chars": 4315,
+      "sents": 230,
+      "avg_sent": 18.2,
+      "max_sent": 56,
+      "paras": 202,
+      "avg_para": 21.4,
+      "short_pct": 47.8,
+      "long_pct": 0.9,
+      "q": 30,
+      "ex": 1
+    }
+  ],
+  "total": {
+    "chars": 23624,
+    "sentences": 914,
+    "avgSent": 25.7,
+    "shortPct": 32.9,
+    "longPct": 9.0,
+    "pronounPer1k": {
+      "我": 16.9,
+      "你": 12.5,
+      "他": 7.2,
+      "她": 6.0,
+      "我们": 4.3,
+      "自己": 3.4,
+      "他们": 1.0,
+      "大家": 1.0,
+      "你们": 0.4,
+      "咱们": 0.1
+    }
+  },
+  "punctPer1k": {
+    "，": 63.9,
+    "。": 37.0,
+    "？": 5.5,
+    "”": 4.7,
+    "“": 4.6,
+    "：": 2.0,
+    "、": 2.0,
+    "！": 1.1,
+    "…": 0.9,
+    "（": 0.7,
+    "）": 0.7,
+    "—": 0.5,
+    "；": 0.4
+  }
+}

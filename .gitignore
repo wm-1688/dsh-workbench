@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Node
+node_modules/
+npm-debug.log*
+pnpm-debug.log*
+
+# 运行期产物 / 本地数据
+*.log
+*.bak
+*.db
+*.db-journal
+client.js
+
+# 凭证
+.env
+.env.*
+aws.env
+*.pem
+*.key
+
+# 系统
+.DS_Store
+Thumbs.db
+desktop.ini

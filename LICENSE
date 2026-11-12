@@ -1,0 +1,79 @@
+MIT License
+
+Copyright (c) 2026 dsh-workbench contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---
+
+THIRD-PARTY NOTICE
+
+This license applies ONLY to the dsh-workbench plugin code:
+  lib/, tools/, install.py, writing-dna/ (analysis documents and statistics
+  only), and the root configuration files.
+
+It does NOT apply to the skills/ directory, which contains 50 third-party
+skills included as the workbench's skill library. Those skills are NOT the
+work of this project: copyright remains with their respective authors, and
+each skill is governed by its own license. Where a skill ships a LICENSE
+file, that license prevails and is kept unmodified alongside the skill.
+
+This project only integrates and invokes these skills. It does not modify
+their internals, does not create derivative works, and does not sell them.
+The project itself is free and open source.
+
+Upstream repositories and their licenses:
+
+  - aiworkskills/wechat-article-skills   Apache-2.0
+  - redfox-data/redfox-community         NO LICENSE DECLARED (see note below)
+  - KKKKhazix/khazix-skills              MIT
+  - yang0/handraw-style                  MIT (with Attribution Requirement)
+                                         Copyright (c) 2026 yang0
+                                         https://github.com/yang0/handraw-style
+  - op7418/Humanizer-zh                  MIT, Copyright (c) 2026 歸藏
+  - larashero3-dotcom/writing-dna-skill  NOASSERTION
+  - BigPengSays/bigpeng-hot-gzh          MIT, Copyright (c) 2026 BigPeng
+
+Notable bundled licenses:
+
+  - skills/handraw-style         MIT (with Attribution Requirement)
+                                 Copyright (c) 2026 yang0
+  - skills/aihot                 MIT, Copyright (c) 2026 Virxact
+  - skills/bigpeng-hot-gzh       MIT, Copyright (c) 2026 BigPeng
+  - skills/humanizer-zh          MIT, Copyright (c) 2026 歸藏
+  - skills/lieflat-less-ai-tone  MIT, Copyright (c) 2026 shiujan
+  - skills/writing-dna-skill     MIT
+
+NOTE ON redfox-data/redfox-community: that repository declares no license
+file, so its 27 skills are "all rights reserved" by default. This project
+includes them as dependencies only, claims no rights over them, and does not
+sell or sublicense them. If the author objects to their inclusion, please
+open an issue and we will adjust or remove them.
+
+REMOVED CONTENT: writing-dna/mimeng/raw/ previously contained the full text of
+6 articles by another author, used as a writing-style analysis corpus. Those
+texts are not licensed under the MIT license above and have been removed from
+this repository and its distribution packages. No longer included.
+
+See SKILLS-CREDITS.md for the complete, per-skill attribution list, and
+skills-manifest.json for the machine-readable manifest with upstream URLs and
+licenses.
+
+If you are an author of a bundled skill and want your work removed or
+attributed differently, please open an issue.
