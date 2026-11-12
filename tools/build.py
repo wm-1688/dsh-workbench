@@ -10,12 +10,13 @@
     gen-materials.py       抓 7 天热榜归档 → lib/materials.snapshot.json
     workbench-db.py export 导出 SQLite 快照 → lib/db.snapshot.json
     gen-catalog.py          把技能包 + 素材 + 数据库 注入 → lib/client.js
-    check-docs.py           把 README 的声明当断言，跟代码实际状态对账 ⛔ 不一致则中止
+    check-docs.py           把文档的声明当断言，跟代码实际状态对账 ⛔ 不一致则中止
 
 **文档对账放在最后且会中止构建**：它是"文档不落后于代码"的机器闸门。
-2026-10-06 出现过两次文档与代码不符（README 停留在「数据层还没接」、
-写进 README 的「6 张表」是 grep 数错的），靠"记得改文档"管不住，所以做成闸门。
-改了代码就要同步 README；确实要临时跳过时用 --skip-doc-check，但要清楚为什么。
+2026-10-06 出现过两次文档与代码不符（文档停留在「数据层还没接」、
+写进文档的「6 张表」是 grep 数错的），靠"记得改文档"管不住，所以做成闸门。
+改了代码就要同步文档（README 给用户 / DEVELOPMENT 给开发）；
+确实要临时跳过时用 --skip-doc-check，但要清楚为什么。
 
 改完界面后必须重启 DSH（client 半按模块 id 加载）。
 """
@@ -80,6 +81,7 @@ def check_writing_skills():
     names = [n for n, _ in items]
 
     roots = [
+        os.path.join(plugin, "skills"),              # 插件自带技能库（开源包随包分发）
         os.path.join(plugin, "..", ".dsh", "skills"),
         os.path.join(plugin, "..", ".dsh", "redfox-skills"),
         os.path.expanduser(os.path.join("~", ".dsh", "skills")),
@@ -130,9 +132,11 @@ def check_writing_skills():
 
 
 def workspace_drafts():
-    """草稿根目录。build.py 在 <插件>/tools/ 下，草稿在 <workspace>/drafts/。"""
+    """草稿根目录。开发环境在 <workspace>/drafts/，安装环境在 <插件>/drafts/。"""
     plugin = os.path.dirname(HERE)
-    return os.path.join(plugin, "..", "drafts")
+    sys.path.insert(0, HERE)
+    import ws_path
+    return os.path.join(ws_path.resolve_workspace(plugin), "drafts")
 
 
 def main():
@@ -146,7 +150,7 @@ def main():
         print("（跳过抓取与选题生成）")
     # 图片相关的 4 张表（image_jobs/series/assets/usage）由 image-db.py 建，
     # workbench-db.py 不管它们。build 时不先建，新装的环境里就缺这 4 张表，
-    # README 的「9 张业务表」对不上（2026-11-08 打包验证时发现）。
+    # 文档的「9 张业务表」对不上（2026-11-08 打包验证时发现）。
     run("image-db.py", "init")
     run("workbench-db.py", "init")
     run("workbench-db.py", "export")
@@ -155,7 +159,7 @@ def main():
     rc = run("check-docs.py")
     if rc != 0 and "--skip-doc-check" not in sys.argv:
         print("\n❌ 文档与代码不一致，构建中止（界面数据其实已刷新，但请先修文档）。")
-        print("   · 同步 README 里的表清单 / 路由清单 / 状态机 / 数字 / 命令 / 文件结构")
+        print("   · 同步文档里的表清单 / 路由清单 / 状态机 / 数字 / 命令 / 文件结构")
         print("   · 确认要临时跳过：python tools/build.py --skip-doc-check")
         return 1
 
@@ -179,7 +183,13 @@ def main():
     # 后半段连续 1324 字无图。这类问题靠肉眼数不出来，必须做成闸门。
     # 只检查已经有图位的稿子（queued 阶段还没写，不参与）。
     print("\n=== check_image_layout ===")
-    rc = run("check-image-layout.py", *sorted(glob.glob(os.path.join(workspace_drafts(), "*", "draft.md"))))
+    # 没有草稿时（全新安装 / 开源包）glob 返回空，不能把「无参数」当成失败。
+    layout_targets = sorted(glob.glob(os.path.join(workspace_drafts(), "*", "draft.md")))
+    if layout_targets:
+        rc = run("check-image-layout.py", *layout_targets)
+    else:
+        print("  没有草稿，跳过")
+        rc = 0
     if rc != 0 and "--skip-layout-check" not in sys.argv:
         print("\n❌ 有草稿的配图位置不合格，构建中止。")
         print("   · 判据见 配图路线.md「图位数量与位置」")
