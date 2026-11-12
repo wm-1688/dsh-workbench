@@ -937,6 +937,41 @@ GET  {host}/v1/api/result?id=<task_id>    → running/… → succeeded → resu
 `images` 数组最多 1–6 张，参考图先转 PNG 再 base64（网关对 webp 上传的兼容性未验证）。
 多模态那套 `image_create.py` 只实现了纯文生图，所以生图工作台**没有复用它**，另写了 `image-gen.py`。
 
+### 端点与密钥的解析顺序
+
+中转站默认是 **GRS AI**（`DEFAULT_HOST = "https://grsai.dakka.com.cn"`，`image-gen.py` 第 49 行附近）。
+主机名的解析优先级（`load_model_cfg()`）：
+
+1. 环境变量 `DSH_WORKBENCH_IMAGE_ENDPOINT` —— 最高优先级，临时切站不改文件
+2. 工作区 `.aws-article/config.yaml` 的 `image_model.base_url` —— 取 scheme + netloc；
+   若填的是完整 `…/v1/api/generate`，会剥掉路径只留主机名
+3. `DEFAULT_HOST` —— 兜底
+
+模型名 / 尺寸 / 质量同样来自 `config.yaml` 的 `image_model.{model,default_size,default_quality}`，
+缺省回落 `DEFAULT_MODEL = "gpt-image-2.5"` / `1024x1024` / `auto`。
+
+密钥从**工作区根目录 `aws.env`** 读（不是环境变量，也不是 `.credentials.yaml`），键名：
+
+| 键 | 用途 |
+|---|---|
+| `IMAGE_MODEL_API_KEY` | 生图必需；默认文本模型也复用它（实测同一个 key 可用） |
+| `WRITING_MODEL_API_KEY` | 可选，单独给文本模型计费时用；缺省回落上面那个 |
+
+文本模型另有 `DSH_WORKBENCH_TEXT_MODEL`（默认 `gemini-2.5-flash`）和
+`DSH_WORKBENCH_TEXT_ENDPOINT` 两个环境变量可覆盖。`aws.env` 已在 `.gitignore` 里。
+
+### 换平台要改哪里
+
+代码写死了 GRS AI 的**异步两段式**（提交拿 `task_id` → 轮询 `/v1/api/result`）。
+换别家平台通常要动三处：
+
+1. `load_model_cfg()` —— 端点拼装规则（同步接口就没有 `resultUrl`）
+2. 提交处的 payload 构造 —— 字段名各家不同（`images` 裸 base64 是本家约定）
+3. `run` 里的轮询循环 —— 同步返回的平台直接取 `results[].url`，不用轮询
+
+`POLL_TIMEOUT = 420` 秒 / `POLL_INTERVAL = 3.0` 秒是照 GRS AI 的出图耗时定的，
+换到更慢的平台要一起调。改完先拿一张图跑通再批量，别直接压任务。
+
 ### 七个模块（都是顶层 tab，不合并）
 
 **顺序 = 模块的优先级**：`漫图创作` 排第一，所以打开工作台直接落在创作页（它也确实是这个工作台的主线）。
