@@ -866,7 +866,8 @@ def cmd_export(args):
     publishes = [dict(r) for r in conn.execute("SELECT * FROM publishes ORDER BY id DESC")]
     conn.close()
     payload = {
-        "dbPath": DB_PATH,
+        # 存相对路径：快照会随包分发，不能把作者本机的绝对路径写进去
+        "dbPath": os.path.join("workbench", "workbench.db"),
         "exportedAt": now(),
         "counts": {"topics": len(topics), "drafts": len(drafts), "publishes": len(publishes)},
         "topics": topics,
