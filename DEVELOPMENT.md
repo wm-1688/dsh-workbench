@@ -960,6 +960,28 @@ GET  {host}/v1/api/result?id=<task_id>    → running/… → succeeded → resu
 文本模型另有 `DSH_WORKBENCH_TEXT_MODEL`（默认 `gemini-2.5-flash`）和
 `DSH_WORKBENCH_TEXT_ENDPOINT` 两个环境变量可覆盖。`aws.env` 已在 `.gitignore` 里。
 
+### 文本模型为什么不用 DSH 的那套
+
+**`text_chat()` 走的是出图聚合站的 `/v1/chat/completions`，不是 DSH 主对话的模型配置。**
+这是刻意的，原因有三：
+
+1. **工具是纯 Python 标准库**，跑在 `python tools/image-gen.py` 子进程里，
+   拿不到 DSH 主进程的模型客户端与会话上下文
+2. **计费口径统一**：出图与组词走同一家、同一个 key，账单在一处看
+3. **实测可用**：同一个 `IMAGE_MODEL_API_KEY` 在该站 `/v1/chat/completions` 上
+   只有 `gemini-2.5-flash` 能通（`gpt-4o` / `gpt-4.1` / `gpt-5` / `deepseek-chat` /
+   `claude` / `qwen` / `glm` 全部 `model not found`）—— 换模型前必须先在站上试通
+
+`text_chat()` 只有两个调用点，都在出图前：
+
+| 调用点 | 作用 | 失败影响 |
+|---|---|---|
+| `polish_theme()` | 把需求说明改写成画面描述，**只返回建议不自动替换** | 降级为用原文直接出图 |
+| `smart_split()` | 文案 → 分镜 JSON（漫画流），`temperature=0.3` 求稳定 | 漫画流不可用，单图不受影响 |
+
+`style_decision()` 选风格/图型/色卡**不调模型** —— 它复用技能自带的
+`resolve_reference.py` 查能力表，本地完成、零成本。别把它和文本模型混为一谈。
+
 ### 换平台要改哪里
 
 代码写死了 GRS AI 的**异步两段式**（提交拿 `task_id` → 轮询 `/v1/api/result`）。
