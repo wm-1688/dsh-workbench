@@ -650,11 +650,41 @@ dsh-workbench/
 
 ## 八、安装（写 DSH 目录，在工作区之外，需要一次提权）
 
-1. profile 的 `package.json`：`dependencies` 加 `"dsh-workbench": "link:C:/data/test/dsh-workbench"`，
-   `dsh.profile.bundles` 数组加 `"dsh-workbench"`
-2. profile 目录跑 `pnpm install` 建立 link
-3. **完全退出 DSH 再启动**（client 半按模块 id 加载，必须重启进程）
-4. 看左侧栏
+1. **完全退出 DSH** —— 托盘也退，任务管理器确认无进程。DSH 运行时占用 profile 目录，
+   不停掉会让后续写 `package.json` 失败（见下方 EPERM）
+2. profile 的 `package.json`：`dependencies` 加 `"dsh-workbench": "link:<插件绝对路径>"`，
+   `dsh.profile.bundles` 数组**追加** `"dsh-workbench"`（别覆盖原有项）
+3. 建立链接，二选一：
+   - `pnpm install`（在 profile 目录）
+   - `cmd /c mklink /J "<profile>\node_modules\dsh-workbench" "<插件绝对路径>"` —— 免 pnpm
+4. 启动 DSH，看左侧栏
+
+### 为什么可以跳过 pnpm
+
+本插件 `package.json` **没有 `dependencies` 字段**，四个 peerDependencies 全部
+`optional: true`。`pnpm install` 在这里唯一的作用就是把插件目录链进 `node_modules`，
+用 `mklink /J` 等价替代（junction 不需要管理员权限）。
+
+装完 `node_modules/dsh-workbench` 应是一个目录联接，指向插件根目录。
+
+### EPERM rename 报错
+
+```
+[EPERM] rename '...\package.json.358186889' -> '...\package.json'
+```
+
+pnpm 改文件是「写临时文件 → rename 覆盖」，rename 要求目标文件无进程持有句柄。
+Windows 上常见成因，按此顺序排查：
+
+| 成因 | 处理 |
+|---|---|
+| DSH 未完全退出（最常见） | 托盘退出 + 任务管理器确认 |
+| 杀毒软件实时防护 | 临时关闭 |
+| 编辑器 / 资源管理器打开着该文件或目录 | 关闭 |
+| 仍然失败 | 改用 `mklink /J`，绕开 pnpm |
+
+**注意**：这不是 ACL 权限损坏。同一目录「几小时前还能写、现在不行」通常是 DSH 重启后
+开始监视 profile 目录（`patchReload: live` 会监听文件变化），而不是权限变了。
 
 ---
 
