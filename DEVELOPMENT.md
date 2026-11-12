@@ -1,11 +1,25 @@
 # dsh-workbench · 开发文档
 
+**当前版本：`0.1.0`**
+
 本文件面向**开发者与维护者**：表结构、路由、文件结构、命令速查、设计取舍与踩坑记录。
 
 > **普通用户请先读 [README.md](./README.md)** —— 那里只有功能、安装、依赖与免责说明。
 
 这里的内容会随代码变化，包含大量实现细节与历史决策。改动代码后请同步本文件，
 `tools/check-docs.py` 会把本文档里的声明当断言与代码对账，不一致则构建中止。
+
+### 版本号约定
+
+版本号写在 `package.json` 的 `version` 字段，README 顶部与本文档顶部同步标注。
+发版时三处一起改：
+
+1. `package.json` → `"version"`
+2. `README.md` 顶部「当前版本」与 §一 表格的「版本」行
+3. 本文件顶部「当前版本」
+
+语义化版本：`0.x.y` 阶段不保证向后兼容，破坏性改动升 `x`，新增功能升 `y`，
+修 bug 只动补丁位。`check-docs.py` 目前**不**校验版本号一致性，靠人守。
 
 ---
 
@@ -621,8 +635,13 @@ dsh-workbench/
 │   ├── ws_path.py            工作区解析（DSH_HOME / 工作区根，其他脚本共用）
 │   ├── fetch-skills.py       从上游补下载技能（按 skills-manifest.json）
 │   └── wb.py                 调 api 的简写助手（Agent 用）
-├── DEVELOPMENT.md
-└── README.md
+├── assets/
+│   └── wechat-wumo.jpg        README 第八节用的作者微信二维码
+├── LICENSE                    MIT（只覆盖插件代码，不含 skills/）
+├── SKILLS-CREDITS.md          第三方技能来源与许可证清单
+├── skills-manifest.json       技能清单机器可读版（上游地址 / 许可证 / 无上游标记）
+├── DEVELOPMENT.md             本文件：面向开发与维护者
+└── README.md                  面向用户：功能 / 安装 / 依赖 / 免责
 ```
 
 **改界面必须走 `client.template.js` + `build.py`**，直接改 `client.js` 会在下次生成时被覆盖。
