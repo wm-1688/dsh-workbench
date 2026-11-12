@@ -48,7 +48,11 @@ def analyze(path):
     for ln in text.split("\n"):
         st = ln.strip()
         if st.startswith("![") and "placeholder" in st:
-            positions.append(cum)
+            # 封面标记不计入正文图位：按 aws 规范它放在 # 行之前，
+            # 排版时会单独抽出来当文章封面，不进正文。
+            # 这里如果算进去，就会多算一张图，还报「首图前 0 字」。
+            if not st.startswith("![封面"):
+                positions.append(cum)
         elif re.match(r"^#\s", st):
             continue
         else:

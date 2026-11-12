@@ -1,6 +1,6 @@
 # dsh-workbench · 开发文档
 
-**当前版本：`0.1.0`**
+**当前版本：`0.1.1`**
 
 本文件面向**开发者与维护者**：表结构、路由、文件结构、命令速查、设计取舍与踩坑记录。
 
@@ -386,6 +386,38 @@ python tools/wb.py take-job 12                    # 按 id 精确取任务（不
 python tools/wb.py counts                         # 各表计数
 ```
 
+一条命令跑完某阶段的全部检查（不用记下面这些脚本名）：
+
+```bash
+python tools/check-all.py drafts/<slug> --stage=draft    # 写完初稿
+python tools/check-all.py drafts/<slug> --stage=review   # 审稿
+python tools/check-all.py drafts/<slug> --stage=layout   # 配图前
+```
+
+单个检查器（一般不用单独跑，`build.py` 和 `check-all.py` 会调）：
+
+| 脚本 | 查什么 | 是否阻断构建 |
+|---|---|---|
+| `check-facts.py` | 稿里每个具体断言（数字/时间/引语）能否在素材找到出处 | ⛔ 是 |
+| `check-structure.py` | 开头废话、结尾总结全文、空转过渡句、小节字数失衡 | ⛔ 是 |
+| `check-thesis.py` | 论点一致性：主论点落地率、结尾回扣、单节占比、每节关联度 | ⛔ 是 |
+| `check-cover.py` | 封面构图：不能是「左图右纯色」的两半拼贴 | ⛔ 是 |
+| `check-image-layout.py` | 图位数量、均匀性、结尾覆盖 | ⛔ 是 |
+| `check-quality.py` | 内容质感（能机器判定的那部分） | 否，只报数 |
+| `check-topic-align.py` | 选题对齐：有没有用上读者三问 | 否，只报数 |
+| `check-texture.py` | 质感尺子（给「人格叙事体」这类克制风格用） | 否，只报数 |
+
+**为什么有的阻断有的不阻断**：`check-quality` / `check-topic-align` / `check-texture`
+查的是「表达倾向」而不是「对错」——某些题材本来就不适合第一人称，硬卡会让所有稿子
+写成同一个模子。但每一条都该被看见，所以只报数。
+
+选题与打包：
+
+```bash
+python tools/topic-pipeline.py --date 2026-11-12   # 从当天素材生成选题（四步流程）
+python tools/pack.py                               # 打包 → dist/dsh-workbench-<版本>.zip
+```
+
 **数据层与 node 半之间走 JSON**：`api --payload <base64>`，请求 `{"op": "..."}`，
 响应 `{"ok": true, ...}`。node 半的 `callDb()` 就是这一层的封装。
 
@@ -604,6 +636,14 @@ dsh-workbench/
 ├── tools/
 │   ├── build.py              一条命令刷新：抓热榜 → 导出 DB → 生成 client.js → **文档对账**
 │   ├── check-docs.py         README 漂移检测（把文档声明当断言，跟代码对账）⛔
+│   ├── check-all.py          一条命令跑完某阶段全部检查（--stage=draft/review/layout）
+│   ├── check-cover.py        封面专项：不能是「左图右纯色」两半拼贴（build.py 硬闸门）
+│   ├── check-facts.py        事实核查：稿里每个具体断言能否在素材里找到出处
+│   ├── check-quality.py      内容质感：视频 04 里能机器判定的部分（不中止构建）
+│   ├── check-structure.py    结构检查：教程 03《结构工程》里能机器校验的部分
+│   ├── check-texture.py      质感尺子：给「人格叙事体」这类克制风格用
+│   ├── check-thesis.py       论点一致性：这篇文章有没有在讲同一件事
+│   ├── check-topic-align.py  选题对齐：有没有用上选题设计的读者三问
 │   ├── check-draft.py        按写作技能跑对应 L1 检查（A 类=aws 配额，B 类=卡兹克）⛔
 │   ├── check-image-log.py    读生图日志（**UTF-16**，按 UTF-8 读会漏掉全部告警）
 │   ├── check-image-layout.py 查配图位置（图位数/均匀性/结尾覆盖，build.py 硬闸门）
@@ -628,12 +668,14 @@ dsh-workbench/
 │   ├── gzh-deep.py           实力榜账号分布（10w+ 占比 / 转赞中位 / 阅读中位 / 发布频次）
 │   ├── gzh-seg.py            按内容方向切开一个分类的账号（民生细分用；--list 列账号）
 │   ├── measure-tone.py       单篇/多篇的 AI 味标记频率（用 lieflat 的量尺脚本）
+│   ├── topic-pipeline.py      从素材生成选题·统一四步流程（4 个入口共用）
 │   ├── gen-catalog.py        扫技能目录 + 注入快照 → lib/client.js
 │   ├── workbench-db.py       SQLite 数据层（公众号 5 张表：建表/迁移/CLI/api）
 │   ├── image-db.py           生图数据层（生图 4 张表，同一个库；CLI/api 与上面同构）
 │   ├── image-gen.py          生图执行器（索引归一化 / 组词 / 调接口）；**功能设计的接缝在这**
 │   ├── ws_path.py            工作区解析（DSH_HOME / 工作区根，其他脚本共用）
 │   ├── fetch-skills.py       从上游补下载技能（按 skills-manifest.json）
+│   ├── pack.py                打包插件 → dist/dsh-workbench-<版本>.zip
 │   └── wb.py                 调 api 的简写助手（Agent 用）
 ├── assets/
 │   ├── shot-hotlist.png        README 2.1 每日热榜截图

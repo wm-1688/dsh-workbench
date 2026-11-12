@@ -37,10 +37,26 @@ def main():
 
     conn = wdb.connect()
     rows = list(conn.execute(
-        "SELECT id, title, track, skill, skill_class, status, word_count FROM drafts ORDER BY id"))
+        "SELECT id, title, track, skill, skill_class, status, word_count, config_json"
+        " FROM drafts ORDER BY id"))
 
     errors, warns, fixed = [], [], 0
+    manual = 0
     for r in rows:
+        # 用户手选的技能不该被赛道路由覆盖（2026-10-25 起改为手选）。
+        # 判据：config_json 非空 = 用户走过「创作配置」弹窗，技能是他选的。
+        # 实测 config_json 里不存 skill（skill 是独立列），所以不能查字段。
+        is_manual = False
+        try:
+            import json as _json
+            cfg = _json.loads(r["config_json"] or "{}")
+            is_manual = bool(cfg)
+        except Exception:
+            is_manual = False
+        if is_manual:
+            manual += 1
+            continue
+
         want_skill, want_class = wdb.route_writing(r["track"] or "")
         if (r["skill"] or "", r["skill_class"] or "") == (want_skill, want_class):
             continue
@@ -61,7 +77,8 @@ def main():
     if not rows:
         print("  （创作库还没有草稿）")
     elif not errors and not warns:
-        print(f"  ✅ {len(rows)} 篇草稿的技能与赛道路由一致")
+        tail = f"（另有 {manual} 篇用户手选，不参与路由校验）" if manual else ""
+        print(f"  ✅ {len(rows)} 篇草稿的技能与赛道路由一致{tail}")
     else:
         if errors:
             print(f"  ❌ {len(errors)} 篇 queued 草稿的技能与当前路由不一致"

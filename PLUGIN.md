@@ -2,7 +2,7 @@
 
 > 一个跑在 [DSH](https://github.com/deepseek-ai) 里的公众号创作工作台。从选题、写稿、审稿、排版到配图，把一条完整的创作流水线装进一个界面。
 
-[![版本](https://img.shields.io/badge/version-0.1.0-blue)]()
+[![版本](https://img.shields.io/badge/version-0.1.1-blue)]()
 [![Python](https://img.shields.io/badge/python-3.9%2B-brightgreen)]()
 [![平台](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)]()
 
@@ -67,8 +67,8 @@
 
 ```bash
 # 1. 解压
-unzip dsh-workbench-0.1.0.zip
-cd dsh-workbench-0.1.0
+unzip dsh-workbench-0.1.1.zip
+cd dsh-workbench-0.1.1
 
 # 2. 一键安装（会自动装插件依赖的技能）
 python install.py
@@ -112,7 +112,7 @@ python install.py --check
 ## 目录结构
 
 ```
-dsh-workbench-0.1.0/
+dsh-workbench-0.1.1/
 ├── install.py                一键安装器
 ├── package.json              DSH 插件声明
 ├── cordis.patch.yml          插件注册补丁

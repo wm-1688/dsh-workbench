@@ -1,6 +1,6 @@
 {
   "name": "dsh-workbench",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
   "description": "创作工作台 · DSH 插件：选题 → 写稿 → 审稿 → 排版 → 配图 全流程（含依赖技能）",
   "type": "module",
