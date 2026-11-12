@@ -8,7 +8,7 @@
 
 会自动做的事：
     1. 检查 Python 版本与必需目录
-    2. 初始化数据库（10 张表）
+    2. 初始化数据库（9 张业务表）
     3. 生成 client.js（界面代码）
     4. 安装依赖技能（包内自带，复制即可）
     5. 检查 DSH 插件挂载情况，给出精确的下一步指令
@@ -119,7 +119,8 @@ def main():
             dbp = os.path.join(ws, "workbench", "workbench.db")
             conn = sqlite3.connect(dbp)
             tables = sorted(r[0] for r in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"))
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name NOT LIKE 'sqlite_%'"))
             conn.close()
             say(f"✅ 数据库就绪（{len(tables)} 张表）")
             say(f"   {dbp}")
