@@ -9,6 +9,11 @@
   2. 写进 README 的「6 张表」是用 grep 数出来的，把 docstring 里的中文也数进去了
 靠"记得改文档"管不住，所以做成可检测的。
 
+文档分两份（2026-11-12 起）：
+  README.md       面向用户：功能、安装、依赖、免责
+  DEVELOPMENT.md  面向开发：表结构、路由、文件结构、命令速查、踩坑记录
+断言可以写在其中任意一份，本脚本把两份合起来对账。
+
 检查项：表清单 / 路由清单 / 状态机 / 命令速查 / 文件结构 / 关键数字。
 """
 
@@ -19,7 +24,7 @@ import sqlite3
 import sys
 
 # 「跑一次才生成」的产物：允许缺失，存在时必须与 README 一致。
-# 开源包不含这些（20MB 本地数据），但 README 文件树里应当写明它们的存在，
+# 开源包不含这些（20MB 本地数据），但文档文件树里应当写明它们的存在，
 # 否则使用者不知道跑完 build 会多出什么。缺失时 check-docs 不报错。
 OPTIONAL_GENERATED = {
     "lib/client.js",
@@ -39,11 +44,14 @@ OPTIONAL_GENERATED = {
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLUGIN = os.path.dirname(HERE)
-README = os.path.join(PLUGIN, "README.md")
-DB_PY = os.path.join(HERE, "workbench-db.py")
+DOC_NAMES = ["README.md", "DEVELOPMENT.md"]
+DB_PYS = [os.path.join(HERE, "workbench-db.py"),
+          os.path.join(HERE, "image-db.py")]
 INDEX_JS = os.path.join(PLUGIN, "lib", "index.js")
 TPL_JS = os.path.join(PLUGIN, "lib", "client.template.js")
-DB_FILE = os.path.join(os.path.dirname(PLUGIN), "workbench", "workbench.db")
+# 库可能落在插件目录下（自包含）或上一级（工作区）
+DB_CANDIDATES = [os.path.join(PLUGIN, "workbench", "workbench.db"),
+                 os.path.join(os.path.dirname(PLUGIN), "workbench", "workbench.db")]
 
 problems = []
 checked = []
@@ -59,25 +67,33 @@ def read(p):
     return io.open(p, encoding="utf-8").read()
 
 
-doc = read(README)
-db_py = read(DB_PY)
+# 两份文档合并对账：断言写在哪一份都认
+docs = {}
+for name in DOC_NAMES:
+    p = os.path.join(PLUGIN, name)
+    docs[name] = read(p) if os.path.isfile(p) else ""
+doc = "\n".join(docs.values())
+db_py = "\n".join(read(p) for p in DB_PYS if os.path.isfile(p))
 index_js = read(INDEX_JS)
 tpl = read(TPL_JS)
 
 # ── 1. 表清单 ──
-# 文档：第三节表格里的 `表名`
+# 文档：表清单表格里的 `表名`（三列或两列都认）
 doc_tables = set(re.findall(r"(?m)^\| `(\w+)` \| [^|]+ \| [^|]+ \|$", doc))
 if not doc_tables:
-    # 宽松兜底：抓第三节到第四节之间的反引号表名
-    seg = doc.split("## 三、")[1].split("## 四、")[0]
-    doc_tables = set(re.findall(r"^\| `(\w+)` \|", seg, re.M))
+    # 宽松兜底：抓所有表格行首的反引号标识符
+    doc_tables = set(re.findall(r"(?m)^\| `(\w+)` \|", doc))
 real_tables = set()
-if os.path.exists(DB_FILE):
-    con = sqlite3.connect(DB_FILE)
-    real_tables = {n for (n,) in con.execute(
-        "SELECT name FROM sqlite_master WHERE type='table'") if n != "sqlite_sequence"}
-    con.close()
+for p in DB_CANDIDATES:
+    if os.path.exists(p):
+        con = sqlite3.connect(p)
+        real_tables = {n for (n,) in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")
+            if n != "sqlite_sequence"}
+        con.close()
+        break
 else:
+    # 建表语句分布在两个数据层脚本里，都要数
     real_tables = set(re.findall(r"CREATE TABLE IF NOT EXISTS (\w+)\s*\(", db_py))
 note(doc_tables == real_tables, "表清单",
      f"文档 {sorted(doc_tables)} ≠ 实际 {sorted(real_tables)}")
@@ -106,11 +122,16 @@ else:
     note(False, "「N 条路由」", "README 里找不到该声明（格式应为 `API 路由（7 条，`）")
 
 # ── 4. 状态机 ──
+# 两种写法都认：表格行 `| `drafts` | … | `queued → draft → …` |`，
+# 或独立一行 `drafts : queued → draft → …`
 doc_states = []
-# 允许行首缩进（状态机写在代码块里）
-m = re.search(r"^\s*(\w+) → ([\w →]+)$", doc, re.M)
+m = re.search(r"`(\w+ → [\w →]+)`", doc)
 if m:
-    doc_states = [m.group(1)] + m.group(2).split(" → ")
+    doc_states = m.group(1).split(" → ")
+else:
+    m = re.search(r"^\s*drafts\s*:?\s*(\w+(?: → \w+)+)\s*$", doc, re.M)
+    if m:
+        doc_states = m.group(1).split(" → ")
 m2 = re.search(r"const DRAFT_STAGES = \[([^\]]+)\]", tpl)
 real_states = re.findall(r"'(\w+)'", m2.group(1)) if m2 else []
 note(doc_states == real_states, "状态机",
@@ -127,21 +148,34 @@ for label, d, r in [("命令速查·CLI", doc_cli, real_cli), ("命令速查·wb
     note(not missing, label, f"文档里的 {missing} 在代码里不存在")
 
 # ── 6. 文件结构 ──
-tree = doc.split("## 七、文件结构")[1].split("## 八、")[0] if "## 七、文件结构" in doc else ""
+# 文件树写在 DEVELOPMENT.md（面向开发）；README 只讲用户可见的目录。
+tree = ""
+for name in ("DEVELOPMENT.md", "README.md"):
+    d = docs.get(name, "")
+    for head in ("## 七、文件结构", "## 目录结构", "## 文件结构"):
+        if head in d:
+            tail = d.split(head, 1)[1]
+            tree = tail.split("\n## ", 1)[0]
+            break
+    if tree:
+        break
 for f in re.findall(r"^[│├└─\s]*([\w.\-]+\.(?:json|yml|js|py|md))", tree, re.M):
     p = os.path.join(PLUGIN, f)
     found = os.path.exists(p) or any(
         os.path.exists(os.path.join(PLUGIN, d, f)) for d in ("lib", "tools", ""))
     # 可选产物（跑一次才生成）缺失不算错——开源包不含本地数据，
-    # 但 README 该写它们的存在，否则使用者不知道会多出什么。
-    if not found and f in OPTIONAL_GENERATED:
+    # 但文档该写它们的存在，否则使用者不知道会多出什么。
+    # 集合里存的是 `lib/xxx.json` 全路径，这里比裸文件名，两种都认。
+    if not found and (f in OPTIONAL_GENERATED
+                      or os.path.basename(f) in {os.path.basename(x)
+                                                 for x in OPTIONAL_GENERATED}):
         continue
-    note(found, f"文件结构·{f}", "README 列了但文件不存在")
+    note(found, f"文件结构·{f}", "文档列了但文件不存在")
 
-# ── 7. 反向：实际存在的文件有没有写进 README ──
-# （2026-10-06 补：新增了两个工具却忘了写进 README，此前只查一个方向，查不出来）
+# ── 7. 反向：实际存在的文件有没有写进文档 ──
+# （2026-10-06 补：新增了两个工具却忘了写进文档，此前只查一个方向，查不出来）
 listed = set(re.findall(r"([\w.\-]+\.(?:json|yml|js|py|md))", tree))
-SKIP = {"client.js", "本地数据说明.md"}          # 生成物，README 在同段说明了，不单列
+SKIP = {"client.js", "本地数据说明.md"}          # 生成物，文档在同段说明了，不单列
 for sub in ("lib", "tools"):
     dp = os.path.join(PLUGIN, sub)
     if not os.path.isdir(dp):
@@ -151,19 +185,19 @@ for sub in ("lib", "tools"):
                 or f.endswith(".snapshot.json") or f in SKIP):
             continue
         note(f in listed, f"反向·{sub}/{f}",
-             "文件存在，但 README 的文件结构里没有它（新增文件要补进 README）")
+             "文件存在，但文档的文件结构里没有它（新增文件要补进 DEVELOPMENT.md）")
 
 # ── 输出 ──
-print("README 漂移检测")
+print("文档漂移检测（README + DEVELOPMENT）")
 print("=" * 60)
 for ok, label, detail in checked:
     print(f"  {'✅' if ok else '❌'} {label}" + (f"  —— {detail}" if not ok else ""))
 print("=" * 60)
 if problems:
-    print(f"发现 {len(problems)} 处漂移，README 与代码不一致：")
+    print(f"发现 {len(problems)} 处漂移，文档与代码不一致：")
     for p in problems:
         print("  · " + p)
-    print("\n→ 改代码后请同步 README；改 README 后请复核断言格式。")
+    print("\n→ 改代码后请同步文档；改文档后请复核断言格式。")
     sys.exit(1)
 print(f"全部 {len(checked)} 项一致。")
 sys.exit(0)
