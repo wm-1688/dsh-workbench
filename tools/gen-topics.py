@@ -30,7 +30,10 @@ from datetime import datetime
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLUGIN = os.path.dirname(HERE)
-WS = os.path.dirname(PLUGIN)
+# 工作区解析走 ws_path：开发环境用插件上级，安装环境用插件自己
+sys.path.insert(0, HERE)
+import ws_path
+WS = ws_path.ensure_workspace(PLUGIN)
 DB = os.path.join(WS, "workbench", "workbench.db")
 SNAPSHOT = os.path.join(PLUGIN, "lib", "materials.snapshot.json")
 OUT = os.path.join(PLUGIN, "lib", "topics.generated.json")
