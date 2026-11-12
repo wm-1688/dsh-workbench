@@ -28,3 +28,6 @@ aws.env
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# 安装器生成的报告（含本机路径）
+install-report.md
