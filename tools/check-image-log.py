@@ -21,7 +21,9 @@ def read_log(p):
 
 
 def main():
-    dirs = sys.argv[1:] or [r"C:\data\test\drafts\20261011-pingfenbiao"]
+    if not sys.argv[1:]:
+        sys.exit("用法：python tools/check-image-log.py <草稿目录> [更多目录...]")
+    dirs = sys.argv[1:]
     bad = 0
     for d in dirs:
         p = os.path.join(d, "image-generation.log")

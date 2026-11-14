@@ -27,7 +27,7 @@ FILES = [
     ("_rank-搞笑幽默.html", "搞笑"),
     ("_tmp_gzh.html", "人文（历史归属）"),
 ]
-BASE = r"C:\data\test"
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def load(p):
@@ -102,6 +102,6 @@ print("\n  各赛道 TOP10 账号名（看内容形态）：")
 for r in rows_out:
     print(f"\n  [{r['赛道']}] {r['TOP']}")
 
-out = r"C:\data\test\dsh-workbench\lib\gzh-deep-stats.json"
+out = os.path.join(BASE, "lib", "gzh-deep-stats.json")
 json.dump(rows_out, io.open(out, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
 print(f"\n  写入 {out}")

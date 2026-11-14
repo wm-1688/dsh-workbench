@@ -140,6 +140,22 @@ def normalize(platform, items, title_keys, hot_keys, url_keys, id_rule, date):
     return rows
 
 
+def _keep_days():
+    """保留天数：settings.materialKeepDays 优先，兜底 7。
+
+    2026-11-13：原来写死 7，用户没法调。现在界面可配，
+    但取值走 appconfig，保证「设置页改了真的生效」。
+    """
+    try:
+        import sys as _sys
+        import os as _os
+        _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+        import appconfig
+        return max(1, min(appconfig.get_int("materialKeepDays", 7), 30))
+    except Exception:
+        return 7
+
+
 def main():
     date = datetime.datetime.now().strftime("%Y-%m-%d")
     all_rows = []
@@ -264,7 +280,7 @@ def main():
             notes.append("保留当天上一版（本次未抓到）: " + "、".join(stale))
         archive["byDate"][date] = kept + all_rows
 
-    keep = sorted(archive["byDate"].keys())[-7:]
+    keep = sorted(archive["byDate"].keys())[-_keep_days():]
     archive["byDate"] = {d: archive["byDate"][d] for d in keep}
     archive["dates"] = keep                        # 升序，最后一个是最新
     archive["platforms"] = sorted({r["platform"] for d in keep for r in archive["byDate"][d]})

@@ -9,7 +9,15 @@ import io
 import re
 import sys
 
-P = sys.argv[1] if len(sys.argv) > 1 else r"C:\data\test\drafts\20261011-pingfenbiao\draft.md"
+# 开关（2026-11-13 加）：
+#   用户明确要求「可以用小标题，但风格仍按卡兹克」时，结构和加粗这两条会误伤。
+#   这两个开关只放行「小标题」与「加粗」，禁用词、标点、口语词密度仍然照查。
+ALLOW_HEADING = "--allow-heading" in sys.argv
+ALLOW_BOLD = "--allow-bold" in sys.argv
+ARGS = [a for a in sys.argv[1:] if not a.startswith("--")]
+if not ARGS:
+    sys.exit("用法：python tools/check-khazix.py <draft.md>")
+P = ARGS[0]
 t = io.open(P, encoding="utf-8").read()
 lines = t.splitlines()
 
@@ -73,13 +81,19 @@ h = len([l for l in lines if l.startswith("# ")])
 h2 = len([l for l in lines if l.startswith("## ")])
 bold = t.count("**") // 2
 bullets = len([l for l in lines if re.match(r"^\s*[-*+]\s", l)])
-print(f"  {'❌' if h2 else '✅'} markdown 小标题 ## × {h2}   （khazix：绝大多数文章不加小标题）")
-if h2:
-    fails.append(f"小标题 × {h2}")
+if ALLOW_HEADING:
+    print(f"  ·  markdown 小标题 ## × {h2}   （已用 --allow-heading 放行）")
+else:
+    print(f"  {'❌' if h2 else '✅'} markdown 小标题 ## × {h2}   （khazix：绝大多数文章不加小标题）")
+    if h2:
+        fails.append(f"小标题 × {h2}")
 print(f"  ·  一级标题 # × {h}（文章标题）")
-print(f"  {'❌' if bold > 3 else '✅'} 加粗 × {bold}   （khazix：不大量加粗，超 3 处即过度结构化）")
-if bold > 3:
-    fails.append(f"加粗 × {bold}")
+if ALLOW_BOLD:
+    print(f"  ·  加粗 × {bold}   （已用 --allow-bold 放行）")
+else:
+    print(f"  {'❌' if bold > 3 else '✅'} 加粗 × {bold}   （khazix：不大量加粗，超 3 处即过度结构化）")
+    if bold > 3:
+        fails.append(f"加粗 × {bold}")
 print(f"  {'❌' if bullets > 3 else '✅'} bullet 列表项 × {bullets}   （超 3 需改散文）")
 if bullets > 3:
     fails.append(f"bullet × {bullets}")

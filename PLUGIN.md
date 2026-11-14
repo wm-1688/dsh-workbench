@@ -1,8 +1,8 @@
-# dsh-workbench · 创作工作台
+# dsh-workbench · 墨鱼创作工作台
 
-> 一个跑在 [DSH](https://github.com/deepseek-ai) 里的公众号创作工作台。从选题、写稿、审稿、排版到配图，把一条完整的创作流水线装进一个界面。
+> 一个跑在 [DSH](https://github.com/deepseek-ai) 里的墨鱼创作工作台。从选题、写稿、审稿、排版到配图，把一条完整的创作流水线装进一个界面。
 
-[![版本](https://img.shields.io/badge/version-0.1.1-blue)]()
+[![版本](https://img.shields.io/badge/version-0.2.0-blue)]()
 [![Python](https://img.shields.io/badge/python-3.9%2B-brightgreen)]()
 [![平台](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)]()
 
@@ -67,8 +67,8 @@
 
 ```bash
 # 1. 解压
-unzip dsh-workbench-0.1.1.zip
-cd dsh-workbench-0.1.1
+unzip dsh-workbench-0.2.0.zip
+cd dsh-workbench-0.2.0
 
 # 2. 一键安装（会自动装插件依赖的技能）
 python install.py
@@ -105,14 +105,14 @@ python install.py --check
 
 把插件目录放进 DSH profile 的 `node_modules`，或在 profile 目录执行 `pnpm link <插件路径>`，然后重启 DSH。
 
-重启后侧边栏出现「创作工作台」。
+重启后侧边栏出现「技能库」「公众号工作台」「生图工作台」。
 
 ---
 
 ## 目录结构
 
 ```
-dsh-workbench-0.1.1/
+dsh-workbench-0.2.0/
 ├── install.py                一键安装器
 ├── package.json              DSH 插件声明
 ├── cordis.patch.yml          插件注册补丁

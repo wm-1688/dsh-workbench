@@ -49,8 +49,12 @@ DB_PYS = [os.path.join(HERE, "workbench-db.py"),
           os.path.join(HERE, "image-db.py")]
 INDEX_JS = os.path.join(PLUGIN, "lib", "index.js")
 TPL_JS = os.path.join(PLUGIN, "lib", "client.template.js")
-# 库可能落在插件目录下（自包含）或上一级（工作区）
-DB_CANDIDATES = [os.path.join(PLUGIN, "workbench", "workbench.db"),
+# 库位置交给 ws_path 解析：装到 profile 里或另设 DSH_WORKBENCH_HOME 时，
+# 硬写 PLUGIN/.. 会指到不存在的目录，读不到库就退化成「文档说 10 张、实际 0 张」。
+sys.path.insert(0, HERE)
+import ws_path
+DB_CANDIDATES = [os.path.join(ws_path.resolve_workspace(PLUGIN), "workbench", "workbench.db"),
+                 os.path.join(PLUGIN, "workbench", "workbench.db"),
                  os.path.join(os.path.dirname(PLUGIN), "workbench", "workbench.db")]
 
 problems = []

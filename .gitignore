@@ -29,9 +29,32 @@ aws.env
 Thumbs.db
 desktop.ini
 
-# 安装后生成的报告（含本机路径，不入库）
-install-report.md
+# 构建期生成的快照 / 索引（体积大、可重建，不入库）
+lib/gzh-deep-stats.json
+lib/gzh-hot.snapshot.json
+lib/gzh-rank-summary.json
+lib/gzh-rank/
+lib/img-catalog.json
+lib/sports.snapshot.json
+lib/vd744-analysis.json
+lib/vd744-index.json
+lib/vd744-topics.md
+lib/xhs-hot.snapshot.json
+_d.json
+_t.json
 
-# 构建产物（本地抓取的快照数据，不入库）
+# 一次性迁移脚本（历史遗留，不是产品代码）
+tools/_patch_*.py
+
+# 构建临时目录
+_tmp/
+
+# 原始大截图（assets/ 下已有压缩版）
+docs/screenshots/
+
+# 运行期快照（装完跑 build.py 重新生成，不入库）
 lib/materials.snapshot.json
 lib/topics.generated.json
+
+# 运行期快照：含本地选题与抓取素材，装完跑 build.py 重新生成，不入库
+lib/db.snapshot.json

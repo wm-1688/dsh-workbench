@@ -49,6 +49,17 @@ KEEP_DAYS = 7
 
 
 def api_key():
+    try:
+        import appconfig
+        v = appconfig.get_secret("redfoxKey")
+        if v:
+            return v
+    except Exception:
+        pass
+    return _api_key_legacy()
+
+
+def _api_key_legacy():
     """三级回退取 Key：环境变量 → HKCU 环境 → HKLM 环境。"""
     key = os.environ.get("REDFOX_API_KEY")
     if key:

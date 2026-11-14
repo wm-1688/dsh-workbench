@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""创作工作台 · SQLite 数据层（Agent 侧）
+"""墨鱼创作工作台 · SQLite 数据层（Agent 侧）
 
 用法：
     python tools/workbench-db.py init
@@ -10,7 +10,7 @@
     python tools/workbench-db.py set-topic --id 1 --status selected
     python tools/workbench-db.py add-draft --topic-id 1 --title "..." --skill khazix-writer --track 社会文化观察
     python tools/workbench-db.py list-drafts
-    python tools/workbench-db.py add-publish --draft-id 1 --method draft --account 吾墨
+    python tools/workbench-db.py add-publish --draft-id 1 --method draft --account 你的公众号名
     python tools/workbench-db.py list-publishes
     python tools/workbench-db.py export          # 导出 UI 快照（服务器 API 做好前的桥）
 
@@ -154,6 +154,16 @@ CREATE INDEX IF NOT EXISTS idx_publishes_draft ON publishes(draft_id);
 --   3. 一份提示词从 5 行到 50 行都可能，字段化的表单会逼用户按格子填。
 -- 旧列（metrics_json/profile_json/...）保留不删——SQLite 删列代价高且已有数据，
 -- 但代码不再读写它们；新数据一律进 body_md。
+CREATE TABLE IF NOT EXISTS settings (
+    key         TEXT PRIMARY KEY,
+    value       TEXT,
+    kind        TEXT,
+    label       TEXT,
+    hint        TEXT,
+    group_key   TEXT,          -- 归属工作台：image=生图 / gzh=公众号 / ''=通用
+    updated_at  TEXT
+);
+
 CREATE TABLE IF NOT EXISTS writing_styles (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   code          TEXT    NOT NULL UNIQUE,   -- 短代号，如 MS-001，草稿 config_json 里引用它
@@ -527,8 +537,24 @@ def ensure_schema(conn):
     # 风格表三层扩展（2026-11-05）：定性画像 / 口语词库 / 范文摘录
     for col, decl in STYLE_NEW_COLUMNS:
         _add_column_if_missing(conn, "writing_styles", col, decl)
+    # 选题四步流程列（topic-pipeline.py --save 依赖）。
+    # SCHEMA 里的 topics 仍是旧版 22 列，而 topic-pipeline.py 按 34 列 INSERT，
+    # 缺列时报 "table topics has no column named source_type"，整批落库全失败。
+    for col, decl in [
+            ("source_type", "TEXT"), ("material_facts", "TEXT"),
+            ("material_missing", "TEXT"), ("public_theme", "TEXT"),
+            ("topic_role", "TEXT"),
+            ("reader_why_click", "TEXT"), ("reader_what_get", "TEXT"),
+            ("reader_why_share", "TEXT"),
+            ("score_emotion", "INTEGER"), ("score_difference", "INTEGER"),
+            ("score_audience", "INTEGER"), ("score_window", "INTEGER"),
+            ("structure_type", "TEXT"), ("source_url", "TEXT"),
+            ("source_platform", "TEXT")]:
+        _add_column_if_missing(conn, "topics", col, decl)
     _migrate_source_key_with_date(conn)
     _migrate_track_to_genre(conn)
+    # 2026-11-13：设置项归属工作台，生图台只看自己的那几项
+    _add_column_if_missing(conn, "settings", "group_key", "TEXT")
     conn.commit()
 
 
@@ -778,7 +804,16 @@ def cmd_add_draft(args):
 
 DRAFT_SELECT = """
 SELECT d.*, t.title AS topic_title, t.source_key AS topic_source_key,
-       j.title AS source_title, j.platform AS source_platform
+       j.title AS source_title, j.platform AS source_platform,
+       -- 与发布管理同一套回退：草稿多数没挂采集素材，
+       -- 只认 j.title 会让「来源」列大面积空白。
+       COALESCE(NULLIF(j.title, ''), NULLIF(t.title, ''), NULLIF(d.theme, '')) AS source_display,
+       CASE
+         WHEN NULLIF(j.title, '') IS NOT NULL THEN 'material'
+         WHEN NULLIF(t.title, '') IS NOT NULL THEN 'topic'
+         WHEN NULLIF(d.theme, '') IS NOT NULL THEN 'theme'
+         ELSE ''
+       END AS source_kind
 FROM drafts d
 LEFT JOIN topics t ON t.id = d.topic_id
 LEFT JOIN topic_jobs j ON j.source_key = t.source_key
@@ -827,11 +862,24 @@ def cmd_add_publish(args):
 PUBLISH_SELECT = """
 SELECT p.*,
        d.title  AS draft_title,
+       d.theme  AS draft_theme,
        d.track  AS track,
        d.skill  AS skill,
        t.source_key AS topic_source_key,
-       j.title      AS source_title,
-       j.platform   AS source_platform
+       t.title      AS topic_title,
+       j.title      AS job_title,
+       j.platform   AS source_platform,
+       -- 三级回退：采集素材 > 选题标题 > 草稿主题。
+       -- 大部分选题由 Agent 直接产出，没有对应 topic_jobs，
+       -- 只 join 素材表会导致「来源」大面积空白。
+       COALESCE(NULLIF(j.title, ''), NULLIF(t.title, ''), NULLIF(d.theme, '')) AS source_title,
+       CASE
+         WHEN NULLIF(j.title, '')  IS NOT NULL THEN 'material'
+         WHEN NULLIF(t.title, '')  IS NOT NULL THEN 'topic'
+         WHEN NULLIF(d.theme, '')  IS NOT NULL THEN 'theme'
+         ELSE ''
+       END AS source_kind,
+       t.public_theme AS source_public_theme
 FROM publishes p
 LEFT JOIN drafts d ON d.id = p.draft_id
 LEFT JOIN topics t ON t.id = d.topic_id
@@ -866,8 +914,7 @@ def cmd_export(args):
     publishes = [dict(r) for r in conn.execute("SELECT * FROM publishes ORDER BY id DESC")]
     conn.close()
     payload = {
-        # 存相对路径：快照会随包分发，不能把作者本机的绝对路径写进去
-        "dbPath": os.path.join("workbench", "workbench.db"),
+        "dbPath": DB_PATH,
         "exportedAt": now(),
         "counts": {"topics": len(topics), "drafts": len(drafts), "publishes": len(publishes)},
         "topics": topics,
@@ -1092,7 +1139,50 @@ def cmd_api(args):
                 skill, klass = route_writing(track)
             theme = req.get("theme") or ""
             materials = req.get("materials") or ""
+            # ── 从选题组装完整素材（2026-11-08 加）──
+            # 以前只存 req 里的 materials，选题加工拆出的素材事实、缺口、
+            # 读者三问、公共命题、结构类型全部丢失，Agent 拿到空素材只能编。
+            if topic is not None and not materials:
+                _parts = []
+                try:
+                    _facts = json.loads(topic["material_facts"] or "[]")
+                except Exception:
+                    _facts = []
+                if _facts:
+                    _parts.append("【素材事实】（逐条列出，写作时只能用这些，不许新增数字）\n"
+                                  + "\n".join("- " + str(x) for x in _facts))
+                try:
+                    _miss = json.loads(topic["material_missing"] or "[]")
+                except Exception:
+                    _miss = []
+                if _miss:
+                    _parts.append("【素材缺口】（报道没给的信息，写作时避开或明说「报道未提」）\n"
+                                  + "\n".join("- " + str(x) for x in _miss))
+                if digest:
+                    _parts.append("【摘要】" + digest)
+                _col = {}
+                try:
+                    _col = {k: topic[k] for k in topic.keys()}
+                except Exception:
+                    _col = {}
+                if _col.get("public_theme"):
+                    _parts.append("【公共命题】" + _col["public_theme"])
+                if _col.get("topic_role"):
+                    _parts.append("【选题方向】" + _col["topic_role"])
+                if _col.get("reader_why_click"):
+                    _parts.append("【读者为什么点】" + _col["reader_why_click"])
+                if _col.get("reader_what_get"):
+                    _parts.append("【读完得到什么】" + _col["reader_what_get"])
+                if _col.get("reader_why_share"):
+                    _parts.append("【为什么会转发】" + _col["reader_why_share"])
+                materials = "\n\n".join(_parts)
             requirement = req.get("requirement") or ""
+            # 核心角度优先取选题的公共命题（它是可验证的命题，viewpoint 常为空）
+            if topic is not None and not requirement:
+                try:
+                    requirement = (topic["public_theme"] or "") or requirement
+                except Exception:
+                    pass
             # config_json 只存结构化配置，正文类字段（theme/materials/requirement）单独存，
             # 否则前端要解析 JSON 才能显示，出错时整块配置都读不出来。
             cfg = req.get("config") or {}
@@ -1113,6 +1203,234 @@ def cmd_api(args):
             conn.commit()
             out = {"ok": True, "id": rid, "skill": skill, "skillClass": klass,
                    "title": title, "track": track, "theme": theme}
+        elif op == "get-settings":
+            # 密钥类只回打码值：界面只需要知道「配没配」，不需要明文。
+            grp = (req.get("group") or "").strip()
+
+            # 个别 channel 类型字段的下拉选项和生图那两个不一样，这里按 key 指定。
+            # 文本模型通道要「DSH / OpenAI 兼容」，不能套生图的「GRS AI / OpenAI 兼容」。
+            CHANNEL_OPTIONS = {
+                "textModel": [
+                    {"value": "dsh", "label": "DSH（主对话模型，默认）"},
+                    {"value": "openai", "label": "OpenAI 兼容（第三方服务）"},
+                ],
+            }
+            if grp:
+                rows = conn.execute(
+                    "SELECT key, value, kind, label, hint, group_key, updated_at FROM settings "
+                    "WHERE group_key=? ORDER BY key", (grp,)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT key, value, kind, label, hint, group_key, updated_at FROM settings ORDER BY key"
+                ).fetchall()
+            items = []
+            for r in rows:
+                v = r["value"] or ""
+                if r["kind"] == "secret":
+                    shown = (v[:6] + "…" + v[-4:]) if len(v) > 12 else ("已配置" if v else "")
+                    items.append({"key": r["key"], "kind": r["kind"], "label": r["label"],
+                                  "hint": r["hint"], "group": r["group_key"] or "",
+                                  "options": CHANNEL_OPTIONS.get(r["key"]),
+                                  "hasValue": bool(v),
+                                  "masked": shown, "updatedAt": r["updated_at"]})
+                else:
+                    items.append({"key": r["key"], "kind": r["kind"], "label": r["label"],
+                                  "hint": r["hint"], "group": r["group_key"] or "",
+                                  "options": CHANNEL_OPTIONS.get(r["key"]),
+                                  "hasValue": bool(v),
+                                  "value": v, "updatedAt": r["updated_at"]})
+            out = {"ok": True, "settings": items}
+        elif op == "set-settings":
+            # 批量写。**空值跳过不覆盖**（界面上「没填」不等于「要清空」）。
+            patch = req.get("values") or {}
+            n, skipped = 0, []
+            for k, v in patch.items():
+                row = conn.execute("SELECT key FROM settings WHERE key=?", (k,)).fetchone()
+                if not row:
+                    continue
+                sv = str(v).strip()
+                if sv == "":
+                    skipped.append(k)
+                    continue
+                if sv == "__CLEAR__":
+                    sv = ""
+                conn.execute("UPDATE settings SET value=?, updated_at=? WHERE key=?",
+                             (sv, now(), k))
+                n += 1
+            conn.commit()
+            # 密钥要同步回 aws.env：publish.py / image-gen.py 读的是文件，不是数据库。
+            synced = _sync_env_file(conn, patch)
+            out = {"ok": True, "updated": n, "skipped": skipped, "envSynced": synced}
+        elif op == "reset-draft":
+            # 重新生成前的重置：清产出、退回 queued。
+            # 保留配置（主题/素材/观点/技能/风格），只清「写出来的东西」。
+            #
+            # 为什么要 copy 而不是 move：
+            #   move 之后如果 Agent 那边失败，稿子只剩 _prev 里那一份，
+            #   用户看到的是空目录。copy 保留完整快照，随时能整目录还原。
+            did = req.get("id")
+            if not did:
+                out = {"ok": False, "error": "id required"}
+            else:
+                row = conn.execute(
+                    "SELECT id, status, path, config_json FROM drafts WHERE id=?",
+                    (did,)).fetchone()
+                if not row:
+                    out = {"ok": False, "error": f"草稿 #{did} 不存在"}
+                else:
+                    saved, prev_rel, prev_name = [], "", ""
+                    abort = False
+                    dpath = (row["path"] or "").strip()
+                    if dpath:
+                        import os as _os, shutil as _shutil, time as _time
+                        src = _os.path.join(WORKSPACE, dpath)
+                        if _os.path.isdir(src):
+                            stamp = _time.strftime("%Y%m%d-%H%M%S")
+                            dst = _os.path.join(src, "_prev", stamp)
+                            _os.makedirs(dst, exist_ok=True)
+                            # ① 先整份复制（不删原件）
+                            for name in ("draft.md", "draft-stripped.md",
+                                         "article.md", "article.html",
+                                         "draft.md.bak", "cover.png"):
+                                f = _os.path.join(src, name)
+                                if _os.path.isfile(f):
+                                    try:
+                                        _shutil.copy2(f, _os.path.join(dst, name))
+                                        saved.append(name)
+                                    except Exception:
+                                        pass
+                            imgs = _os.path.join(src, "imgs")
+                            if _os.path.isdir(imgs):
+                                try:
+                                    _shutil.copytree(imgs, _os.path.join(dst, "imgs"),
+                                                     dirs_exist_ok=True)
+                                    saved.append("imgs/")
+                                except Exception:
+                                    pass
+                            prev_rel = dpath + "_prev/" + stamp
+                            prev_name = stamp
+                            # ② 不删，改成改名归档在目录里。
+                            #    draft.old.md 不是 Agent 认的正文名，所以不会被读到；
+                            #    但文件还在，任何失败都能手工捞回来。
+                            if "draft.md" in saved:
+                                for name in ("draft-stripped.md", "article.md",
+                                             "article.html", "draft.md.bak", "cover.png"):
+                                    f = _os.path.join(src, name)
+                                    if _os.path.isfile(f):
+                                        try:
+                                            _os.remove(f)
+                                        except Exception:
+                                            pass
+                                old_md = _os.path.join(src, "draft.md")
+                                bak_md = _os.path.join(src, "draft.old.md")
+                                if _os.path.isfile(old_md):
+                                    try:
+                                        if _os.path.isfile(bak_md):
+                                            _os.remove(bak_md)
+                                        _os.rename(old_md, bak_md)
+                                    except Exception:
+                                        pass
+                                imgs = _os.path.join(src, "imgs")
+                                if _os.path.isdir(imgs):
+                                    try:
+                                        _shutil.move(imgs, _os.path.join(dst, "imgs"))
+                                    except Exception:
+                                        pass
+                            else:
+                                # 备份没成功就整个放弃，别动原件
+                                out = {"ok": False,
+                                       "error": "备份旧稿失败，已取消重置（原稿未动）"}
+                                try:
+                                    _os.rmdir(dst)
+                                except Exception:
+                                    pass
+                                conn.rollback()
+                                abort = True
+
+                    # ③ 把 prev 位置写进 config_json，供回滚用
+                    cfg = {}
+                    try:
+                        import json as _json
+                        cfg = _json.loads(row["config_json"] or "{}")
+                    except Exception:
+                        cfg = {}
+                    if abort:
+                        pass    # out 已在上面设成失败，不动库也不动状态
+                    else:
+                        if prev_rel:
+                            cfg["prevDir"] = prev_rel
+                            cfg["prevAt"] = prev_name
+
+                        conn.execute(
+                            """UPDATE drafts SET
+                                 status='queued', word_count=NULL, digest=NULL,
+                                 cover=NULL, images_count=0, review_issues=0,
+                                 started_at=NULL, updated_at=?, config_json=?
+                               WHERE id=?""",
+                            (now(), json.dumps(cfg, ensure_ascii=False), did))
+                        conn.commit()
+                        out = {"ok": True, "id": did, "from": row["status"],
+                               "to": "queued", "backedUp": saved, "prevDir": prev_rel}
+
+        elif op == "restore-prev":
+            # 回滚：把 _prev 里最近一次快照整个还原回来。
+            # 用途：重新生成时 Agent 挂了、或者用户后悔了。
+            did = req.get("id")
+            snap = req.get("stamp")   # 可选，不传就用 config_json 里记的
+            if not did:
+                out = {"ok": False, "error": "id required"}
+            else:
+                row = conn.execute(
+                    "SELECT id, path, config_json FROM drafts WHERE id=?", (did,)).fetchone()
+                if not row:
+                    out = {"ok": False, "error": f"草稿 #{did} 不存在"}
+                else:
+                    dpath = (row["path"] or "").strip()
+                    cfg = {}
+                    try:
+                        cfg = json.loads(row["config_json"] or "{}")
+                    except Exception:
+                        cfg = {}
+                    stamp = snap or cfg.get("prevAt") or ""
+                    if not dpath or not stamp:
+                        out = {"ok": False, "error": "没有可还原的快照"}
+                    else:
+                        import os as _os, shutil as _shutil
+                        src = _os.path.join(WORKSPACE, dpath, "_prev", stamp)
+                        dst = _os.path.join(WORKSPACE, dpath)
+                        if not _os.path.isdir(src):
+                            out = {"ok": False, "error": f"快照不存在：{stamp}"}
+                        else:
+                            restored = []
+                            # 如果当前是改名后的 draft.old.md，先清掉，避免两份并存
+                            cur_old = _os.path.join(dst, "draft.old.md")
+                            if _os.path.isfile(cur_old):
+                                try:
+                                    _os.remove(cur_old)
+                                except Exception:
+                                    pass
+                            for name in ("draft.md", "draft-stripped.md",
+                                         "article.md", "article.html",
+                                         "draft.md.bak", "cover.png"):
+                                f = _os.path.join(src, name)
+                                if _os.path.isfile(f):
+                                    try:
+                                        _shutil.copy2(f, _os.path.join(dst, name))
+                                        restored.append(name)
+                                    except Exception:
+                                        pass
+                            simgs = _os.path.join(src, "imgs")
+                            if _os.path.isdir(simgs):
+                                try:
+                                    _shutil.copytree(simgs, _os.path.join(dst, "imgs"),
+                                                     dirs_exist_ok=True)
+                                    restored.append("imgs/")
+                                except Exception:
+                                    pass
+                            out = {"ok": True, "id": did, "stamp": stamp,
+                                   "restored": restored}
+
         elif op == "set-draft":
             # 回写草稿：状态推进、正文完成、封面、审稿结果…都走这里
             colmap = {"words": "word_count", "imagesCount": "images_count",
@@ -1146,11 +1464,9 @@ def cmd_api(args):
             out = {"ok": True}
         elif op == "list-drafts":
             status = req.get("status")
-            sql = ("""SELECT d.*, t.title AS topic_title, t.source_key AS topic_source_key,
-                             j.title AS source_title, j.platform AS source_platform
-                      FROM drafts d
-                      LEFT JOIN topics t ON t.id = d.topic_id
-                      LEFT JOIN topic_jobs j ON j.source_key = t.source_key""")
+            # 复用模块级常量，别在这里再写一份 SQL ——
+            # 写两份的话改了一处另一处不会跟着变（这次来源为空就是这么漏的）。
+            sql = DRAFT_SELECT
             params = []
             if status:
                 sql += " WHERE d.status=?"
@@ -1257,7 +1573,7 @@ def cmd_api(args):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="创作工作台 SQLite 数据层")
+    ap = argparse.ArgumentParser(description="墨鱼创作工作台 SQLite 数据层")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("init").set_defaults(func=cmd_init)
@@ -1324,6 +1640,68 @@ def main():
 
     args = ap.parse_args()
     sys.exit(args.func(args) or 0)
+
+
+# ═══════════════════════════════════════════════════════════
+# 密钥双写：settings → aws.env
+# ═══════════════════════════════════════════════════════════
+# publish.py 和 image-gen.py 是技能脚本，读的是工作区的 aws.env，
+# 不读我们的数据库。所以界面保存密钥时必须同时写文件，
+# 否则会出现「界面改了不生效」——这个坑踩过一次。
+
+ENV_KEY_MAP = {
+    "wechat1AppId": "WECHAT_1_APPID",
+    "wechat1AppSecret": "WECHAT_1_APPSECRET",
+    "wechat2AppId": "WECHAT_2_APPID",
+    "wechat2AppSecret": "WECHAT_2_APPSECRET",
+    "wechat3AppId": "WECHAT_3_APPID",
+    "wechat3AppSecret": "WECHAT_3_APPSECRET",
+    "wechat4AppId": "WECHAT_4_APPID",
+    "wechat4AppSecret": "WECHAT_4_APPSECRET",
+    "wechat5AppId": "WECHAT_5_APPID",
+    "wechat5AppSecret": "WECHAT_5_APPSECRET",
+    "imageModelKey": "IMAGE_MODEL_API_KEY",
+}
+
+
+def _sync_env_file(conn, patch):
+    """把改动的密钥写回工作区根目录的 aws.env。返回写了几个。"""
+    import os as _os
+    import re as _re
+
+    targets = {}
+    for k in patch:
+        env_name = ENV_KEY_MAP.get(k)
+        if not env_name:
+            continue
+        row = conn.execute("SELECT value FROM settings WHERE key=?", (k,)).fetchone()
+        if row and (row["value"] or "").strip():
+            targets[env_name] = row["value"].strip()
+
+    if not targets:
+        return 0
+
+    # WORKSPACE 是模块级常量（脚本顶部已算好），直接用
+    path = _os.path.join(WORKSPACE, "aws.env")
+    if not _os.path.isfile(path):
+        return 0
+
+    lines = io.open(path, encoding="utf-8").read().split("\n")
+    seen, out = set(), []
+    for ln in lines:
+        m = _re.match(r"^(\s*)([A-Z0-9_]+)\s*=", ln)
+        if m and m.group(2) in targets:
+            name = m.group(2)
+            out.append(f"{name}={targets[name]}")
+            seen.add(name)
+        else:
+            out.append(ln)
+    for name, val in targets.items():
+        if name not in seen:
+            out.append(f"{name}={val}")
+
+    io.open(path, "w", encoding="utf-8").write("\n".join(out))
+    return len(targets)
 
 
 if __name__ == "__main__":

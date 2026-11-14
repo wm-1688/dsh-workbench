@@ -8,7 +8,7 @@
 
 会自动做的事：
     1. 检查 Python 版本与必需目录
-    2. 初始化数据库（9 张业务表）
+    2. 初始化数据库（10 张业务表）
     3. 生成 client.js（界面代码）
     4. 安装依赖技能（包内自带，复制即可）
     5. 检查 DSH 插件挂载情况，给出精确的下一步指令
@@ -64,7 +64,7 @@ def main():
 
     print()
     print("  ╔══════════════════════════════════════════════════╗")
-    print("  ║   dsh-workbench · 创作工作台  一键安装           ║")
+    print("  ║   dsh-workbench · 墨鱼创作工作台  一键安装       ║")
     print("  ╚══════════════════════════════════════════════════╝")
     print(f"  安装目录: {HERE}")
     print(f"  时间:     {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -109,6 +109,8 @@ def main():
     step(2, "初始化数据库")
     ok1, out1 = run("image-db.py", "init")
     ok2, out2 = run("workbench-db.py", "init")
+    # 设置项要预置骨架，否则设置页是空白、POST 全被跳过（set-settings 只更新已存在的 key）。
+    ok3, out3 = run("init-settings.py")
     if ok1 and ok2:
         # 数一下表
         import sqlite3
@@ -125,6 +127,12 @@ def main():
             say(f"✅ 数据库就绪（{len(tables)} 张表）")
             say(f"   {dbp}")
             report.append(f"数据库：{len(tables)} 张表 → {dbp}")
+            if ok3:
+                conn2 = sqlite3.connect(dbp)
+                nset = conn2.execute("SELECT COUNT(*) FROM settings").fetchone()[0]
+                conn2.close()
+                say(f"✅ 设置项就绪（{nset} 项）")
+                report.append(f"设置项：{nset} 项")
         except Exception as e:
             say(f"⚠️ 数据库已建但统计失败：{e}")
     else:
@@ -290,7 +298,7 @@ def main():
         "## 下一步",
         "",
         "1. **让 DSH 加载插件**（见上面第 4 步的说明）",
-        "2. 重启 DSH，侧边栏会出现「创作工作台」",
+        "2. 重启 DSH，侧边栏会出现「技能库」「公众号工作台」「生图工作台」",
         "3. 首次使用前，可选：抓一次热榜素材",
         "",
         "```bash",

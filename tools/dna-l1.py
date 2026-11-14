@@ -15,11 +15,18 @@ import shutil
 import sys
 from collections import Counter
 
-import jieba
+try:
+    import jieba
+except ImportError:
+    sys.exit("需要 jieba：pip install jieba")
 import jieba.posseg as pseg
 
-SRC = r"C:\data\test\_ref\mimeng-ghostwriter\raw"
-DST = r"C:\data\test\dsh-workbench\writing-dna\mimeng"
+# 语料源目录：默认取插件内 writing-dna/<作者>/raw，也可用第一个参数覆盖。
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_PLUGIN = os.path.dirname(_HERE)
+SRC = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
+    _PLUGIN, "writing-dna", "mimeng", "raw")
+DST = os.path.join(_PLUGIN, "writing-dna", "mimeng")
 RAW = os.path.join(DST, "raw")
 
 ARTICLES = [

@@ -1,6 +1,6 @@
 # dsh-workbench · 开发文档
 
-**当前版本：`0.1.1`**
+**当前版本：`0.2.0`**
 
 本文件面向**开发者与维护者**：表结构、路由、文件结构、命令速查、设计取舍与踩坑记录。
 
@@ -64,7 +64,7 @@ drafts（创作库）── 触发 ──▶ Agent 按 skill 阶段推进
 |---|---|---|
 | **client 半** | `lib/client.template.js` → 生成 `lib/client.js` | 界面：五个标签页、弹窗、抽屉、全文阅读。注册 `main` + `sidebar.panellist` 槽位 |
 | **node 半** | `lib/index.js` | **带鉴权的 HTTP 路由**（`ctx.connection.fetch.register`）。界面与磁盘之间的桥 |
-| **数据层** | `tools/workbench-db.py` | SQLite（9 张业务表）。Agent 直接调，node 半通过 `execFile` 调。4 张公众号 + 4 张生图 + 1 张文字风格库 |
+| **数据层** | `tools/workbench-db.py` | SQLite（10 张业务表）。Agent 直接调，node 半通过 `execFile` 调。4 张公众号 + 4 张生图 + 1 张文字风格库 + 1 张设置表 + 1 张文字风格库 |
 
 **为什么 SQLite 访问要绕一层 Python**：给 Electron 编译 `better-sqlite3` 会有 ABI 问题；
 Python 标准库 `sqlite3` 零依赖。代价是每次调用 ~100ms（桌面工具可接受）。
@@ -83,6 +83,7 @@ Python 标准库 `sqlite3` 零依赖。代价是每次调用 ~100ms（桌面工�
 | `image_assets` | 生成物（**一行 = 一张图**） | `arm: text/ref`；`rel_path` 供界面走资源路由 |
 | `image_usage` | 生图计费账本 | 按张计次；接口没有配额端点，只能本地记 |
 | `image_series` | 漫画流（**一次创作 = 一组分镜**） | `draft → queued → running → done / failed`；分镜是 `image_jobs` 里带 `series_id` 的行 |
+| `settings` | **界面可配置项**（密钥 / 行为开关，一行一个 key） | `key` 主键；`kind: secret/bool/number/text`；密钥只回打码值 |
 | `writing_styles` | **文字风格库**（一行 = 一种语气） | `status: active/archived`；`kind: personal/system/sub`；指标存 `metrics_json`（区间，可机器验收） |
 
 > **`writing_styles` 为什么是独立表**：`drafts.skill` 指的是**写作技能**
@@ -94,7 +95,7 @@ Python 标准库 `sqlite3` 零依赖。代价是每次调用 ~100ms（桌面工�
 > 拆成固定列必然大量 NULL。区间（`[18,24]`）而不是单值，是因为风格是范围不是点。
 
 `drafts` 表加了 4 个创作配置列（**加列不加表**，
-`check-docs.py` 断言的是「9 张业务表」，加表会破闸门）：
+`check-docs.py` 断言的是「10 张业务表」，加表会破闸门）：
 
 | 列 | 内容 |
 |---|---|
@@ -423,7 +424,7 @@ python tools/pack.py                               # 打包 → dist/dsh-workben
 
 ---
 
-## 四、API 路由（20 条，全部挂在 `/api` 下）
+## 四、API 路由（22 条，全部挂在 `/api` 下）
 
 | 路由 | 方法 | 作用 |
 |---|---|---|
@@ -432,6 +433,8 @@ python tools/pack.py                               # 打包 → dist/dsh-workben
 | `/api/workbench/drafts` | GET / POST | 创作库：列表 / `action:'create'` 建草稿 / `action:'delete'` / 其余按回写 |
 | `/api/workbench/styles` | GET / POST | **文字风格库**：GET 列表（`?kind=personal\|system\|sub\|all`）或单条（`?code=MS-001`）；POST 新建 / 更新 / `action:'delete'` 归档 / `action:'vote'` / `action:'use'` |
 | `/api/workbench/publishes` | GET | 发布记录 |
+| `/api/workbench/settings` | GET / POST | **设置**：GET 读全部配置项（密钥只回打码值）；POST 批量写 |
+| `/api/workbench/llm-chat` | POST | **文本模型（DSH 通道）**：node 半用 `ctx.llm.stream` 调 DSH 主对话模型，给 Python 的润色 / 分镜用；仅 loopback + token 可调 |
 | `/api/workbench/draft-content` | GET | **读全文**：优先 `article.html` → `article.md` → `draft.md`；markdown 会转 HTML |
 | `/api/workbench/asset` | GET | **读配图**：按路径返回二进制（带路径穿越防护） |
 | `/api/workbench/materials` | GET | **每日热榜归档**：实时返回 `materials.snapshot.json`（不再只靠构建时烘焙） |
@@ -622,7 +625,7 @@ dsh-workbench/
 ├── package.json              dsh.bundle.patch + dsh.client.platform:web；peer 全 optional
 ├── cordis.patch.yml          insert 一条 {id, name}
 ├── lib/
-│   ├── index.js              node 半：19 条带鉴权的 fetch 路由 + mdToHtml 转换器
+│   ├── index.js              node 半：22 条带鉴权的 fetch 路由 + mdToHtml 转换器
 │   ├── client.template.js    client 半源码（**改这个**）
 │   ├── gzh-rank-summary.json 各赛道实力榜的汇总（gzh-compare.py 的输入）
 │   ├── gzh-deep-stats.json   各分类账号分布统计（gzh-deep.py 的输出）
@@ -657,6 +660,8 @@ dsh-workbench/
 │   ├── check-khazix.py       khazix-writer 的 L1/L2 硬性规则（禁冒号破折号、禁小标题…）⛔
 │   ├── check-drafts.py       草稿技能与赛道路由一致性（--fix 修正 queued）⛔
 │   ├── check-symbols.py      符号规范检查（**含 article.html**；--fix 修直引号）⛔
+│   ├── check-routes.py       查路由重复注册（同 path 注册两次 → 后一条被丢弃报 404）⛔
+│   ├── check-symbols-defined.py 查路径拼接里的常量有无定义（写错名 → ReferenceError 白屏）⛔
 │   ├── finalize.py           定稿流水线：引号→剥离→插图→排版→校验→发布（幂等）⛔
 │   ├── gen-materials.py      抓 7 天热榜归档 → lib/materials.snapshot.json
 │   ├── gen-sports.py         体育战报采集（头条搜索 → 全文 → 归档；搜索与详情都扣积分）
@@ -670,9 +675,11 @@ dsh-workbench/
 │   ├── measure-tone.py       单篇/多篇的 AI 味标记频率（用 lieflat 的量尺脚本）
 │   ├── topic-pipeline.py      从素材生成选题·统一四步流程（4 个入口共用）
 │   ├── gen-catalog.py        扫技能目录 + 注入快照 → lib/client.js
-│   ├── workbench-db.py       SQLite 数据层（公众号 5 张表：建表/迁移/CLI/api）
+│   ├── workbench-db.py       SQLite 数据层（公众号 5 张表 + 设置 1 张表：建表/迁移/CLI/api）
 │   ├── image-db.py           生图数据层（生图 4 张表，同一个库；CLI/api 与上面同构）
 │   ├── image-gen.py          生图执行器（索引归一化 / 组词 / 调接口）；**功能设计的接缝在这**
+│   ├── appconfig.py          统一配置读取层（settings 表 → 环境变量 → aws.env → 注册表）
+│   ├── init-settings.py      初始化 settings 表 + 从环境变量/aws.env 迁移已有密钥
 │   ├── ws_path.py            工作区解析（DSH_HOME / 工作区根，其他脚本共用）
 │   ├── fetch-skills.py       从上游补下载技能（按 skills-manifest.json）
 │   ├── pack.py                打包插件 → dist/dsh-workbench-<版本>.zip

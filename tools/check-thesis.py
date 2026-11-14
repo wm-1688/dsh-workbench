@@ -34,7 +34,10 @@ import re
 import sqlite3
 import sys
 
-DB = r"C:\data\test\workbench\workbench.db"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ws_path
+DB = os.path.join(ws_path.resolve_workspace(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "workbench", "workbench.db")
 
 # 功能字：含这些字的 bigram 不算内容词
 FUNC = set("的了着是在也就都还又和与把被从对为以之其而且但却因所如若虽然则个么什一"

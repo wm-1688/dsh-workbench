@@ -448,6 +448,21 @@ def save_topics(conn, material, data, job_id=None):
         saved.append(cur.lastrowid)
 
     conn.commit()
+
+    # 回写队列状态：写完选题才算这条素材加工完了。
+    # 不回写的话 job 永远停在 pending，下次还会被重新加工一遍。
+    if job_id:
+        try:
+            st = "done" if saved else "failed"
+            note = f"产出 {len(saved)} 个选题" if saved else "没有合格选题"
+            conn.execute(
+                "UPDATE topic_jobs SET status=?, note=?, updated_at=? WHERE id=?",
+                (st, note, now, job_id))
+            conn.commit()
+        except Exception:
+            # 回写失败不影响选题本身已落库
+            pass
+
     return saved
 
 

@@ -62,6 +62,7 @@ for cat, rows in data.items():
               f"{r.get('compositeScore',0):>7}{num(r.get('totalReadCount')):>9,}"
               f"{num(r.get('maxReadCount')):>9,}{fwd:>8,}{like:>7,}{rt:>7}")
 
-out = r"C:\data\test\dsh-workbench\lib\gzh-rank-summary.json"
+out = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                   "lib", "gzh-rank-summary.json")
 json.dump(summary, io.open(out, "w", encoding="utf-8"), ensure_ascii=False, indent=2)
 print(f"\n  汇总写入 {out}")

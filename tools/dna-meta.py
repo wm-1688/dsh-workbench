@@ -11,7 +11,8 @@ import json
 import os
 import re
 
-DST = r"C:\data\test\dsh-workbench\writing-dna\mimeng"
+DST = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                   "writing-dna", "mimeng")
 RAW = os.path.join(DST, "raw")
 META = os.path.join(DST, "_meta")
 
@@ -81,6 +82,10 @@ def front(text):
 
 
 os.makedirs(META, exist_ok=True)
+if not os.path.isdir(RAW):
+    raise SystemExit(f"语料目录不存在：{RAW}\n"
+                     "此脚本用于从原文语料重建 DNA；仓库只带分析结果，不带原文。")
+
 rows = []
 for f in sorted(os.listdir(RAW)):
     if not f.endswith(".md"):

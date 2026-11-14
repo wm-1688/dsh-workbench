@@ -825,17 +825,29 @@ def asset_ref_text(paths, lang="zh"):
         if not chars:
             return ASSET_REF_EN
         return (f"Of the {len(norm)} attached asset images, {chars} are CHARACTER references and "
-                f"{others} are PRODUCT/PROP references. If any person appears, they MUST be the same "
-                "person as the character reference (same face, hair and outfit) — do not invent a "
-                "different model. Where the character appears is governed by the scene description above. "
-                "Follow the product/prop references' shape, proportions, palette and key features without "
-                "redesigning them.")
+                f"{others} are PRODUCT/PROP references. "
+                "[How to use the character] The main subject in the image MUST match the character "
+                "reference exactly — same species and body type, same facial features, same hair or head "
+                "accessory, same outfit and palette, same carried items. Do not swap the species and do not "
+                "redesign it. If the theme text says \"person\", \"he\" or \"she\", it refers to the "
+                "character in this reference — draw that character, do not turn it into a human just because "
+                "the text says person. "
+                "[How to use product/prop references] Follow their shape, proportions, palette and key "
+                "features without redesigning them.")
     if not chars:
         return ASSET_REF
-    return (f"所附资产参考图共 {len(norm)} 张：其中 {chars} 张是**人物参考**，{others} 张是**商品/道具参考**。"
-            "画面中若出现人物，必须与人物参考图是**同一个人**（同一张脸、同一发型、同一套服装），"
-            "不要另造一个模特；人物是否出现、出现在哪里，以本提示词的画面要求为准。"
-            "商品/道具参考则沿用其外形、比例、配色与关键特征，不要重新设计。")
+    # 角色参考的措辞要**兼容非人角色**（松鼠、猫、机器人…）。
+    # 原来写的是「同一个人 / 同一张脸 / 同一发型」，遇到动物角色就自相矛盾：
+    # 实测选了一只松鼠角色、主题写「一个人坐在窗前发呆」，
+    # 模型夹在「人」和「松鼠」之间，最后画出一只猫。
+    return (f"所附资产参考图共 {len(norm)} 张：其中 {chars} 张是**角色主体参考**，"
+            f"{others} 张是**商品/道具参考**。"
+            "【角色的用法】画面里出现的那个主体，外形必须与角色参考图**完全一致** —— "
+            "同样的物种与体型、同样的五官或面部特征、同样的发型或头部装饰、同样的服装与配色、"
+            "同样的随身物件。不要换一个物种，不要重新设计形象。"
+            "如果主题文字里提到「人」「他」「她」这类词，它指的就是这张角色参考图里的那个角色，"
+            "**按参考图来画，不要因为文字里写了「人」就改画成人类**。"
+            "【商品/道具的用法】沿用其外形、比例、配色与关键特征，不要重新设计。")
 
 
 def build_bare_prompt(theme, layout_id=None, ratio="", color_id=None, constraint=""):
@@ -999,15 +1011,59 @@ def build_prompt(style_id, theme, color_id=None, layout_id=None, with_ref=True,
     if use_asset_refs:
         refs_note.extend(["资产主体"] * len(asset_refs))
     if len(refs_note) > 1:
-        send_zh += "\n所附图片：" + "、".join(
-            f"第 {i + 1} 张为{('画风参考' if n == '画风' else '资产主体参考')}"
-            for i, n in enumerate(refs_note)) + "。"
-        send_en += ("\nAttached images: " + ", ".join(
-            f"the {i + 1} is the {'style' if n == '画风' else 'asset subject'} reference"
-            for i, n in enumerate(refs_note)) + ".")
-    if want_ref:
+        # 只写「第 N 张为 X 参考」模型不知道该怎么用，得把**分工**说清楚：
+        # 画风图只学画法、资产图照抄主体。否则两张图会互相干扰
+        # （实测：风格图 + 松鼠角色图 → 出来一只猫）。
+        n_style = sum(1 for x in refs_note if x == "画风")
+        n_asset = len(refs_note) - n_style
+        parts = []
+        if n_style:
+            parts.append("第 1 张是**画风参考**：只学它的画法（线条、笔触、材质、色彩倾向），"
+                         "不要抄它画的主体")
+        if n_asset:
+            parts.append(f"第 {n_style + 1} 张起共 {n_asset} 张是**资产主体参考**："
+                         "画面里的主体**必须照它画**，外形、配色、服装、随身物件全部沿用")
+        send_zh += "\n【参考图分工】" + "；".join(parts) + "。"
+
+        en_parts = []
+        if n_style:
+            en_parts.append("the 1st is the STYLE reference — take only its rendering method "
+                            "(linework, brushwork, material, color tendencies), not its subject")
+        if n_asset:
+            en_parts.append(f"images {n_style + 1} onward ({n_asset}) are ASSET SUBJECT references — "
+                            "the subject in the output MUST be drawn after them, keeping their shape, "
+                            "palette, outfit and carried items")
+        send_en += "\n[Reference roles] " + "; ".join(en_parts) + "."
+    # 隔离约束**只对画风图生效**。
+    #
+    # 2026-11-14 实测出的问题：原来这里无条件加 REF_ISOLATION，
+    # 而那段写的是「所附图片仅用于参考画风……不要使用参考图里的任何主体、人物、动物、服装」。
+    # 结果连第 2 张资产图也被要求「不要复制」——
+    # 用户选了松鼠角色，出图却变成一只猫，因为模型优先听了「不要复制动物」。
+    #
+    # 正确语义：画风图要隔离，资产图**必须照抄**。两段指令要分开说，且顺序上
+    # 把「哪些图只学画风」限定到具体张数，避免波及资产图。
+    if want_ref and use_asset_refs:
+        # 有资产图时：隔离只针对第 1 张（画风），并明确指出资产图不适用隔离
+        send_zh += (
+            "\n【参考图使用约束】所附图片中，**只有第 1 张（画风参考图）**仅用于提取画风，"
+            "例如线条、笔触、媒介、材质、色彩倾向和整体视觉语言；"
+            "不要沿用第 1 张里的主体、人物、动物、服装、道具、动作、姿态、场景、背景、构图、布局、文字或故事。"
+            "**第 2 张及之后的资产参考图不受此约束**，必须按【资产一致性】的要求照它画。"
+        )
+        send_en += (
+            "\n[Reference image usage] Of the attached images, **only the 1st (style reference)** "
+            "is for style extraction only — linework, brushwork, medium, material texture, color tendencies, "
+            "overall visual language. Do not carry over any subject, person, animal, clothing, prop, action, pose, "
+            "setting, background, composition, layout, text or story from the 1st image. "
+            "**The 2nd and later asset references are NOT subject to this restriction** — "
+            "follow [Asset consistency] and draw them as they are."
+        )
+    elif want_ref:
+        # 只有画风图：用原来的完整隔离
         send_zh += "\n【参考图使用约束】" + REF_ISOLATION
         send_en += "\n" + REF_ISOLATION_EN
+
     if use_asset_refs:
         send_zh += "\n【资产一致性】" + asset_ref_text(asset_refs, "zh")
         send_en += "\n[Asset consistency] " + asset_ref_text(asset_refs, "en")
@@ -1040,8 +1096,36 @@ def load_env(workspace):
     return env
 
 
+def _api_key(workspace):
+    """生图 Key：settings 表 → 环境变量 → aws.env。
+
+    2026-11-13：原来只读 aws.env，界面改了不生效。
+    """
+    try:
+        import sys as _sys, os as _os
+        _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+        import appconfig
+        v = appconfig.get_secret("imageModelKey")
+        if v:
+            return v
+    except Exception:
+        pass
+    return load_env(workspace).get("IMAGE_MODEL_API_KEY", "")
+
+
+# 两种渠道：
+#   grsai   —— 默认。GRS AI 的私有异步接口（提交拿任务号 → 轮询取结果）
+#   openai  —— OpenAI 兼容格式（一次请求直接返回图），市面上多数中转站都是这个
+CHANNEL_GRSAI = "grsai"
+CHANNEL_OPENAI = "openai"
+
+
 def load_model_cfg(workspace):
-    """模型名取自 .aws-article/config.yaml 的 image_model；端点固定走已实测的异步接口。"""
+    """模型名与渠道取自 .aws-article/config.yaml 的 image_model。
+
+    渠道决定走哪套调用流程（见 generate_once），不是所有中转站都兼容
+    GRS AI 的 /v1/api/generate 异步接口，所以这个必须能配。
+    """
     model, size, quality, base = DEFAULT_MODEL, "1024x1024", "auto", ""
     cfg_path = os.path.join(workspace, ".aws-article", "config.yaml")
     if os.path.isfile(cfg_path):
@@ -1053,9 +1137,28 @@ def load_model_cfg(workspace):
             size = (im.get("default_size") or size).strip()
             quality = (im.get("default_quality") or quality).strip()
             base = (im.get("base_url") or "").strip()
+            channel = (im.get("channel") or "").strip().lower()
         except Exception:
             pass
-    key = load_env(workspace).get("IMAGE_MODEL_API_KEY", "")
+    # settings 表优先（设置页改了就生效）；config.yaml 作兜底
+    try:
+        import sys as _sys
+        import os as _os
+        _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+        import appconfig
+        ch = (appconfig.get("imageChannel", "") or "").strip().lower()
+        if ch:
+            channel = ch
+        bu = (appconfig.get("imageBaseUrl", "") or "").strip()
+        if bu:
+            base = bu
+        md = (appconfig.get("imageModel", "") or "").strip()
+        if md:
+            model = md
+    except Exception:
+        pass
+
+    key = _api_key(workspace)
     host = DEFAULT_HOST
     if base:
         p = urllib.parse.urlparse(base)
@@ -1064,10 +1167,38 @@ def load_model_cfg(workspace):
     if base.endswith("/v1/api/generate"):
         host = base[: -len("/v1/api/generate")]
     host = os.environ.get("DSH_WORKBENCH_IMAGE_ENDPOINT") or host
+
+    # 渠道**必须显式配**，不能靠 base_url 猜。
+    #
+    # 为什么不猜（2026-11-13 踩过）：
+    #   config.yaml 里的 base_url 是技能自带的字段，写的是
+    #   https://grsai.dakka.com.cn/v1/images/generations —— 那个地址并不存在
+    #   （GRS AI 真正的接口是 /v1/api/generate）。照它猜会判成 openai，
+    #   结果调用打到不存在的路径上。
+    #
+    # 所以：没配 channel 就按默认渠道 GRS AI 走，跟升级前行为一致。
+    if not channel:
+        channel = CHANNEL_GRSAI
+
+    # openai 渠道：base_url 就是它的端点（可只填域名、可填完整路径）
+    if channel == CHANNEL_OPENAI:
+        if base.endswith("/images/generations"):
+            oa_url = base
+        elif base.endswith("/v1"):
+            oa_url = base + "/images/generations"
+        elif base:
+            oa_url = base.rstrip("/") + "/v1/images/generations"
+        else:
+            oa_url = host.rstrip("/") + "/v1/images/generations"
+    else:
+        oa_url = ""
+
     return {"model": model, "size": size, "quality": quality, "key": key,
+            "channel": channel,
             "host": host.rstrip("/"),
             "submitUrl": host.rstrip("/") + "/v1/api/generate",
-            "resultUrl": host.rstrip("/") + "/v1/api/result"}
+            "resultUrl": host.rstrip("/") + "/v1/api/result",
+            "openaiUrl": oa_url}
 
 
 # ── 调 API ───────────────────────────────────────────────────────────
@@ -1087,7 +1218,178 @@ def http(url, key, data=None, method="POST", timeout=HTTP_TIMEOUT):
         return "ERR", f"{type(e).__name__}: {e}".encode()
 
 
+def _generate_openai(cfg, prompt, images, size, quality):
+    """OpenAI 兼容渠道：一次请求直接返回图片，没有任务号也没有轮询。
+
+    请求体按 OpenAI Images API 的格式：
+        {model, prompt, n, size, response_format}
+    有参考图时走 /images/edits（multipart），但多数中转站对 edits 支持不一，
+    所以这里用最保守的做法：有图就放进 image 字段（部分中转站认），
+    不认时退回纯文生图。
+
+    返回 (bytes, elapsed_s, result_url)。
+    """
+    t0 = time.time()
+    size_str = _openai_size(size)
+
+    # 有参考图：优先 multipart edits（标准做法）
+    if images:
+        boundary = "----dshworkbench" + str(int(time.time() * 1000))
+        parts = []
+
+        def add_field(name, value):
+            parts.append(f"--{boundary}\r\n".encode())
+            parts.append(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode())
+            parts.append(str(value).encode("utf-8"))
+            parts.append(b"\r\n")
+
+        add_field("model", cfg["model"])
+        add_field("prompt", prompt)
+        add_field("n", "1")
+        if size_str:
+            add_field("size", size_str)
+
+        for idx, b64 in enumerate([b for b in (images or []) if b]):
+            try:
+                import base64 as _b64
+                raw = _b64.b64decode(b64)
+            except Exception:
+                continue
+            parts.append(f"--{boundary}\r\n".encode())
+            # 字段名用 image[]（OpenAI 多图编辑的标准写法）。
+            #
+            # 2026-11-14 实测这家中转站：
+            #   单图 image   → 能用（那次 502 是服务端排队超时，不是字段问题）
+            #   多图 image[] → 200 ✓  1.87MB
+            #   多图 image 重复 → 200 ✓
+            # 两种都通，但 image[] 是 OpenAI 官方多图参数名，按标准用这个。
+            parts.append(
+                f'Content-Disposition: form-data; name="image[]"; filename="ref{idx}.png"\r\n'.encode())
+            parts.append(b"Content-Type: image/png\r\n\r\n")
+            parts.append(raw)
+            parts.append(b"\r\n")
+
+        parts.append(f"--{boundary}--\r\n".encode())
+        body = b"".join(parts)
+        edit_url = cfg["openaiUrl"].replace("/images/generations", "/images/edits")
+        headers = {
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+        }
+        st, raw = _http_raw(edit_url, cfg["key"], body, headers)
+        if st == 200:
+            return _openai_pick_image(raw, cfg, t0)
+        # edits 不支持就退回纯文生图，别直接失败
+        # （很多中转站只实现 generations）
+
+    payload = {"model": cfg["model"], "prompt": prompt, "n": 1}
+    if size_str:
+        payload["size"] = size_str
+    if quality and quality not in ("auto", ""):
+        payload["quality"] = quality
+
+    st, raw = http(cfg["openaiUrl"], cfg["key"], json.dumps(payload).encode())
+    txt = raw.decode("utf-8", "replace")
+    if st != 200:
+        raise RuntimeError(_openai_hint(st, txt, cfg))
+    return _openai_pick_image(raw, cfg, t0)
+
+
+def _openai_size(size):
+    """把我们的比例/像素值换成 OpenAI 认可的尺寸。
+
+    OpenAI Images 只接受 1024x1024 / 1536x1024 / 1024x1536 这几种；
+    给了别的值不少中转站会直接 400，所以统一映射到最接近的一档。
+    """
+    v = str(size or "").strip().lower()
+    if "x" in v:
+        try:
+            w, h = [int(x) for x in v.split("x")[:2]]
+            if w > h * 1.15:
+                return "1536x1024"
+            if h > w * 1.15:
+                return "1024x1536"
+            return "1024x1024"
+        except Exception:
+            pass
+    # 比例写法
+    if ":" in v:
+        try:
+            a, b = [float(x) for x in v.split(":")[:2]]
+            if a > b * 1.15:
+                return "1536x1024"
+            if b > a * 1.15:
+                return "1024x1536"
+        except Exception:
+            pass
+    return "1024x1024"
+
+
+def _openai_pick_image(raw, cfg, t0):
+    """从 OpenAI 格式的响应里取图：可能是 b64_json，也可能是 url。"""
+    txt = raw.decode("utf-8", "replace")
+    try:
+        j = json.loads(txt)
+    except Exception:
+        raise RuntimeError(f"返回不是 JSON：{txt[:200]}")
+    items = j.get("data") or []
+    if not items:
+        # 有的中转站把错误塞在 200 里
+        msg = j.get("error") or j.get("message") or txt[:200]
+        raise RuntimeError(f"没有返回图片：{msg}")
+    first = items[0] or {}
+    if first.get("b64_json"):
+        import base64 as _b64
+        return _b64.b64decode(first["b64_json"]), time.time() - t0, "(base64)"
+    url = first.get("url") or ""
+    if not url:
+        raise RuntimeError(f"结果里既没有 b64_json 也没有 url：{txt[:200]}")
+    st, blob = _http_raw(url, "", None, {})
+    if st != 200 or len(blob) < 1000:
+        raise RuntimeError(f"下载图片失败 HTTP {st}")
+    return blob, time.time() - t0, url
+
+
+def _openai_hint(st, txt, cfg):
+    """把常见错误翻译成能指导用户的说法。"""
+    low = txt.lower()
+    if st == 404:
+        return (f"404 找不到接口。当前地址是 {cfg['openaiUrl']}\n"
+                f"    这个中转站可能不支持 OpenAI 格式，检查地址是否应为 /v1/images/generations")
+    if st == 401 or "invalid api key" in low or "unauthorized" in low:
+        return "401 密钥无效。检查生图 API Key 是否正确"
+    if st == 429:
+        return "429 请求过于频繁或余额不足"
+    if "model" in low and ("not found" in low or "not exist" in low or "unsupported" in low):
+        return f"模型名 {cfg['model']} 不被该中转站支持，换一个试试"
+    return f"HTTP {st}: {txt[:300]}"
+
+
+def _http_raw(url, key, data, headers):
+    """带自定义头的原始请求（multipart 用）。返回 (status, bytes)。"""
+    import urllib.request
+    req = urllib.request.Request(url, data=data, method="POST" if data is not None else "GET")
+    for k, v in (headers or {}).items():
+        req.add_header(k, v)
+    if key:
+        req.add_header("Authorization", f"Bearer {key}")
+    req.add_header("User-Agent", "QoderWork/1.0")
+    try:
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+    except Exception as e:
+        return 0, str(e).encode()
+
+
 def generate_once(cfg, prompt, images, size, quality):
+    """按渠道分流。"""
+    if cfg.get("channel") == CHANNEL_OPENAI:
+        return _generate_openai(cfg, prompt, images, size, quality)
+    return _generate_grsai(cfg, prompt, images, size, quality)
+
+
+def _generate_grsai(cfg, prompt, images, size, quality):
     """一次生成 = 一次计费。images 是 base64 列表（0–2 张：画风参考、资产参考）。
 
     接口实测支持 1–6 张参考图，所以画风垫图与资产垫图可以同时给。
@@ -1144,8 +1446,27 @@ def png_size(data):
     return None, None
 
 
+# ── 文本模型配置 ────────────────────────────────────────────────
+#
+# 三个通道，按顺序降级：
+#   ① textModel = "openai" → 用设置页配的外部服务（**不限 GRS AI**，任何 OpenAI 兼容站）
+#   ② textModel = "dsh"    → 走 DSH 主对话的模型（默认）
+#   ③ 前两条都不可用        → 回退中转站 + TEXT_MODEL
+#
+# 字段对应关系（2026-11-13 改成三字段结构）：
+#   textModel        通道：dsh / openai
+#   textModelBaseUrl 接口地址（openai 通道）
+#   textModelModel   模型名（openai 通道）
+#   textModelKey     API Key（openai 通道）
+
+
+
 def ref_to_b64(path):
-    """参考图统一转 PNG 再 base64（网关对 webp 上传的兼容性未知，PNG 已验证可用）。"""
+    """参考图统一转 PNG 再 base64。
+
+    为什么统一转 PNG：网关对 webp 上传的兼容性未知，PNG 已验证可用。
+    另外缩到 1024 以内，避免大图把请求体撑爆。
+    """
     try:
         from PIL import Image
         with Image.open(path) as im:
@@ -1155,41 +1476,239 @@ def ref_to_b64(path):
             im.save(buf, format="PNG")
         return base64.b64encode(buf.getvalue()).decode("ascii")
     except Exception:
+        # 打不开就原样读 —— 让上游自己去报错，别在这里静默改成空
         return base64.b64encode(io.open(path, "rb").read()).decode("ascii")
 
 
-# ── 主题润色 ─────────────────────────────────────────────────────────
+def _cfg(key, env_name=""):
+    """统一读配置：settings 表优先 → 环境变量兜底。
 
-# 出图那家聚合商的文本模型。**实测过**：同一个 IMAGE_MODEL_API_KEY
-# 在 /v1/chat/completions 上只有 gemini-2.5-flash 可用
-# （gpt-4o / gpt-4.1 / gpt-5 / deepseek-chat / claude / qwen / glm 都返回 model not found）。
-TEXT_MODEL = os.environ.get("DSH_WORKBENCH_TEXT_MODEL") or "gemini-2.5-flash"
+    走 appconfig，它的顺序是 settings → 环境变量 → aws.env → 注册表。
+    这样设置页改了立刻生效，不用重启进程。
+    """
+    try:
+        import appconfig
+        v = (appconfig.get(key) or "").strip()
+        if v:
+            return v
+    except Exception:
+        pass
+    return (os.environ.get(env_name) or "").strip() if env_name else ""
 
-POLISH_SYSTEM = (
-    "你是 AI 绘画的提示词助手。用户输入的是要交给绘画模型的「主题」。"
-    "如果它写成了需求说明（例如出现「受众:」「业务场景:」「用途:」「目的:」这类字段，"
-    "或只说了要做什么而没说画面里有什么），把它改写成**具体、可视化的画面描述**；"
-    "如果它本身已经是画面描述，只做轻微润色。"
-    "硬要求："
-    "1) 只输出改写后的主题本身，不要解释、不要加引号、不要换行、不要编号；"
-    "2) 保留用户的原始意图与关键信息（人物、场合、情绪、文字内容）；"
-    "3) 40 字以内，写成一句；"
-    "4) 用中文；"
-    "5) 不要发明用户没提过的事实（具体品牌、真实人名、具体数字）。"
-)
+
+def _text_channel():
+    """文本模型通道：dsh（默认）或 openai。
+
+    兼容旧配置：如果 textModel 里填的不是 dsh/openai，
+    说明是改版前有人直接填了模型名，按 openai 通道处理，别让他的配置失效。
+    """
+    v = (_cfg("textModel", "") or "").strip().lower()
+    if v in ("dsh", "openai"):
+        return v
+    if v:
+        return "openai"
+    return "dsh"
+
+
+def _text_model_name():
+    """openai 通道用哪个模型名。
+
+    优先 textModelModel（新字段）；兼容旧配置时用 textModel 里那个值；最后兜底。
+    """
+    explicit = (_cfg("textModelModel", "") or "").strip()
+    if explicit:
+        return explicit
+    v = (_cfg("textModel", "") or "").strip()
+    if v and v.lower() not in ("dsh", "openai"):
+        return v
+    return "gemini-2.5-flash"
+
+
+def _text_base_url():
+    """openai 通道的接口地址。
+
+    支持两种填法：
+      · 完整端点 https://xxx/v1/chat/completions  → 直接用
+      · 只填域名   https://xxx                    → 补 /v1/chat/completions
+    留空则用生图中转站域名拼。
+    """
+    v = (_cfg("textModelBaseUrl", "") or "").strip()
+    if not v:
+        host = (_cfg("imageBaseUrl", "") or "").strip() or "https://grsai.dakka.com.cn"
+        # imageBaseUrl 可能是完整图片端点，取域名部分
+        m = re.match(r"^(https?://[^/]+)", host)
+        host = m.group(1) if m else host
+        return host.rstrip("/") + "/v1/chat/completions"
+    v = v.rstrip("/")
+    if v.endswith("/chat/completions"):
+        return v
+    if v.endswith("/v1"):
+        return v + "/chat/completions"
+    return v + "/v1/chat/completions"
+
+
+def _text_key():
+    """openai 通道的 API Key。
+
+    优先级：textModelKey（文本模型专用）→ imageModelKey（生图那个）。
+    回退是刻意的：很多人文本和生图用同一家中转站、同一个 Key，省一次填写。
+    但**只有接口地址也指向同一家时回退才安全** —— 这点由 _text_cfg_ready() 兜住。
+    """
+    return (_cfg("textModelKey", "") or _cfg("imageModelKey", "IMAGE_MODEL_API_KEY") or "")
+
+
+def _text_key_is_explicit():
+    """文本模型是否配了自己的 Key（不是从生图那边借的）。"""
+    return bool((_cfg("textModelKey", "") or "").strip())
+
+
+def _text_cfg_ready():
+    """openai 通道是否真的可用，返回 (可用?, 原因)。
+
+    **有意不降级**：只要用户把通道选成了 openai，配置不全就在①返回明确错误，
+    而不是悄悄切到 DSH。理由：用户选了 openai 就是想用外部服务，
+    悄悄切走会让他以为配置生效了，实际却在用 DSH —— 这种"静默成功"最难排查。
+
+    判据：
+      · 模型名必须有（_text_model_name 的有兜底值，所以这里单独看 textModelModel）
+      · 接口地址必须有
+      · Key 必须有 —— 借用生图 Key 时，**地址必须和生图同源**，
+        否则等于拿 A 家的钥匙开 B 家的门，一定失败。
+    """
+    explicit_model = (_cfg("textModelModel", "") or "").strip()
+    legacy_model = (_cfg("textModel", "") or "").strip()
+    has_model = bool(explicit_model) or (legacy_model and legacy_model.lower() not in ("dsh", "openai"))
+    url = _text_base_url()
+    key = _text_key()
+
+    if not has_model:
+        return False, "没填「文本模型名」"
+    if not url:
+        return False, "没填「文本模型接口地址」"
+    if not key:
+        return False, "没有任何可用的 Key（文本模型 API Key 和生图 API Key 都空）"
+    if _text_key_is_explicit():
+        return True, ""
+    # Key 是借生图的 —— 地址必须同源
+    import urllib.parse as _up
+    try:
+        a = _up.urlparse(url).netloc
+        b = _up.urlparse((_cfg("imageBaseUrl", "") or "")).netloc
+    except Exception:
+        return True, ""   # 解析不了就不拦，交给实际请求报错
+    if a and b and a != b:
+        return False, "接口地址和生图不是同一家，请单独填「文本模型 API Key」"
+    return True, ""
+
+
+TEXT_MODEL = "gemini-2.5-flash"
+
+
+def _dsb_chat(system, user, max_tokens, temperature):
+    """走 DSH 通道：本地路由 /api/workbench/llm-chat → node 半用 ctx.llm.stream() 调 DSH 主对话模型。
+
+    为什么绕一圈：ctx 只有 node 半拿得到，Python 拿不到。
+    好处是不用额外配 Key，DSH 换模型这里自动跟着换。
+    失败返回 None，让上层回退，不打断流程。
+    """
+    port = (os.environ.get("DSH_WORKBENCH_PORT") or "").strip()
+    if not port:
+        for ev in ("DSH_WEB_URL", "DSH_WORKBENCH_UI_URL"):
+            u = (os.environ.get(ev) or "").strip()
+            if u:
+                m = re.search(r":(\d+)", u)
+                if m:
+                    port = m.group(1)
+                    break
+    if not port:
+        port = "62775"   # 兜底，错了就回退中转站
+    url = "http://127.0.0.1:%s/api/workbench/llm-chat" % port
+
+    payload = {"system": system, "user": user, "maxTokens": max_tokens}
+    if temperature is not None:
+        payload["temperature"] = temperature
+
+    # 本机回环令牌：node 半启动时写到 <工作区>/.llm-token
+    tok = ""
+    try:
+        tf = os.path.join(WORKSPACE, ".llm-token")
+        if os.path.isfile(tf):
+            tok = io.open(tf, encoding="utf-8").read().strip()
+    except Exception:
+        pass
+    if not tok:
+        return None
+
+    try:
+        import urllib.request as _ur
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        hdrs = {"Content-Type": "application/json", "x-workbench-llm-token": tok}
+        req = _ur.Request(url, data=body, method="POST", headers=hdrs)
+        with _ur.urlopen(req, timeout=180) as resp:
+            raw = resp.read()
+        d = json.loads(raw.decode("utf-8")) if raw else {}
+        if d.get("ok") and (d.get("text") or "").strip():
+            return {"ok": True, "text": d["text"].strip(),
+                    "model": "%s/%s" % (d.get("provider"), d.get("model")),
+                    "via": "dsh"}
+        return None
+    except Exception:
+        return None
 
 
 def text_chat(system, user, workspace=WORKSPACE, max_tokens=800, temperature=None):
-    """一次文本模型调用。**密钥与端点与出图共用一份** ——
-    同一个 IMAGE_MODEL_API_KEY 实测可用（见 TEXT_MODEL 的说明），不额外要求配置。
+    """一次文本模型调用。三通道降级，见文件上方注释。
 
-    抽出来是因为润色与智能分镜都要它：两处各写一遍，迟早有一处忘了改端点或超时。
+    抽成一个函数是因为润色与智能分镜都要它：
+    两处各写一遍，迟早有一处忘了改端点或超时。
     """
+    channel = _text_channel()
+
+    # ── ① openai 通道：走设置页配的外部服务 ──
+    if channel == "openai":
+        ready, why = _text_cfg_ready()
+        cfg_model = _text_model_name()
+        key = _text_key()
+        url = _text_base_url()
+        if not ready:
+            # 选了 openai 就按 openai 报错，**不悄悄切到 DSH** ——
+            # 静默切换会让人误以为配置生效了，实际在用别的通道，最难查。
+            return {"ok": False, "via": "openai-compat",
+                    "error": "文本模型通道选了「OpenAI 兼容」，但配置不全：" + why}
+        if ready:
+            payload = {"model": cfg_model,
+                       "messages": [{"role": "system", "content": system},
+                                    {"role": "user", "content": user}],
+                       "max_tokens": max_tokens}
+            if temperature is not None:
+                payload["temperature"] = temperature
+            try:
+                st, raw = http(url, key, json.dumps(payload, ensure_ascii=False), timeout=120)
+                d = json.loads(raw) if raw else {}
+                txt = (((d.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+                if txt:
+                    return {"ok": True, "text": txt, "model": cfg_model, "via": "openai-compat"}
+            except Exception:
+                pass   # 调不通就继续往下走，别直接失败
+
+    # ── ② DSH 通道 ──
+    r = _dsb_chat(system, user, max_tokens, temperature)
+    if r:
+        return r
+
+    # ── ③ 回退中转站 ──
     env = load_env(workspace)
-    key = env.get("WRITING_MODEL_API_KEY") or env.get("IMAGE_MODEL_API_KEY") or ""
+    key = (env.get("WRITING_MODEL_API_KEY")
+           or env.get("IMAGE_MODEL_API_KEY")
+           or _cfg("imageModelKey", "IMAGE_MODEL_API_KEY")
+           or "")
     if not key:
-        return {"ok": False, "error": "没有可用的文本模型密钥（aws.env 里的 WRITING_MODEL_API_KEY / IMAGE_MODEL_API_KEY 都是空的）"}
-    host = os.environ.get("DSH_WORKBENCH_TEXT_ENDPOINT") or "https://grsai.dakka.com.cn"
+        return {"ok": False,
+                "error": "文本模型不可用：三通道都没成（openai 通道未配置 / DSH 通道不通 / "
+                         "没有中转站 Key）。请在生图工作台「设置」里配置文本模型"}
+    host = (_cfg("imageBaseUrl", "") or "").strip() or "https://grsai.dakka.com.cn"
+    m = re.match(r"^(https?://[^/]+)", host)
+    host = m.group(1) if m else host
     url = host.rstrip("/") + "/v1/chat/completions"
     payload = {"model": TEXT_MODEL,
                "messages": [{"role": "system", "content": system},
@@ -1198,17 +1717,14 @@ def text_chat(system, user, workspace=WORKSPACE, max_tokens=800, temperature=Non
     if temperature is not None:
         payload["temperature"] = temperature
     try:
-        st, raw = http(url, key, json.dumps(payload).encode(), timeout=90)
+        st, raw = http(url, key, json.dumps(payload, ensure_ascii=False), timeout=120)
+        d = json.loads(raw) if raw else {}
+        txt = (((d.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+        if txt:
+            return {"ok": True, "text": txt, "model": TEXT_MODEL, "via": "relay"}
+        return {"ok": False, "error": "中转站返回空：" + str(d)[:200]}
     except Exception as e:
-        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
-    if st != 200:
-        return {"ok": False, "error": f"HTTP {st}: {raw.decode('utf-8', 'replace')[:220]}"}
-    try:
-        j = json.loads(raw.decode("utf-8", "replace"))
-        out = (j["choices"][0]["message"]["content"] or "").strip()
-    except Exception as e:
-        return {"ok": False, "error": f"响应解析失败：{type(e).__name__}: {e}"}
-    return {"ok": True, "text": out}
+        return {"ok": False, "error": "文本模型三通道都失败：" + str(e)}
 
 
 def polish_theme(theme, workspace=WORKSPACE):

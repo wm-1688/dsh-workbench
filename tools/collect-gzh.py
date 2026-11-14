@@ -52,6 +52,19 @@ KEEP_DAYS = 7
 
 
 def api_key():
+    """取红狐 Key：settings 表 → 环境变量 → 注册表。"""
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import appconfig
+        v = appconfig.get_secret("redfoxKey")
+        if v:
+            return v
+    except Exception:
+        pass
+    return _api_key_legacy()
+
+
+def _api_key_legacy():
     """取红狐 Key：环境变量 > HKCU\\Environment。
 
     和 gzh-fetch.py 同一套取法——Key 只配在用户环境变量里，

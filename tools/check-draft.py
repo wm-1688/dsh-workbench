@@ -50,6 +50,35 @@ KHAZIX = os.path.join(HERE, "check-khazix.py")
 AWS_WRITE = os.path.join(SK, "aws-wechat-article-writing", "scripts", "write.py")
 
 # 写作技能 → 检查器。value 是 (可执行文件, 参数构造器) 或 None（暂无检查器）。
+# 这些风格与 A 类配额硬冲突，命中就跳过配额（风格优先）
+STYLE_OVERRIDES = {
+    "MS-006": "卡兹克体（禁小标题、不大量加粗、金句不硬凑）",
+    "MS-008": "人格叙事体（克制、不大量加粗、金句不硬凑）",
+}
+
+TEXTURE = os.path.join(HERE, "check-texture.py")
+
+
+def style_from_db(d):
+    """从 drafts.config_json 里取 styleCode。"""
+    import json as _json
+    try:
+        out = subprocess.run(
+            [PY, "-X", "utf8", DB, "api"],
+            input=_json.dumps({"op": "list-drafts"}),
+            capture_output=True, text=True, encoding="utf-8")
+        j = _json.loads((out.stdout or "").strip().splitlines()[-1])
+        dpath = os.path.abspath(d).replace("\\", "/").rstrip("/") + "/"
+        for row in j.get("drafts") or []:
+            p = (row.get("path") or "").replace("\\", "/").rstrip("/") + "/"
+            if p and dpath.endswith(p):
+                cfg = _json.loads(row.get("config_json") or "{}")
+                return cfg.get("styleCode") or ""
+    except Exception:
+        pass
+    return ""
+
+
 ROUTES = {
     "khazix-writer": ("khazix", KHAZIX),
     "aws-wechat-article-writing": ("aws", AWS_WRITE),
@@ -99,6 +128,22 @@ def main():
         print(f"      已登记：{', '.join(ROUTES)}")
         return 0
 
+    # 风格优先：某些文字风格与 A 类配额是硬冲突的，此时跳过配额改用质感检查。
+    #
+    # 冲突的具体表现（2026-11-13）：
+    #   aws 要求「每 100 字一个加粗落点、至少 15 处、必须有带出处金句」；
+    #   MS-008 人格叙事体明令「不大量加粗、金句 0-1 处」。
+    # 两者不可能同时满足，按项目规则「风格优先级最高」，以风格为准。
+    style_code = style_from_db(d)
+    if skill == "aws-wechat-article-writing" and style_code in STYLE_OVERRIDES:
+        print(f"  ·  风格 {style_code}：{STYLE_OVERRIDES[style_code]}")
+        print(f"     该风格与 aws 加粗/金句配额冲突，跳过配额，改跑质感检查")
+        r = subprocess.run([PY, "-X", "utf8", TEXTURE, d],
+                           capture_output=True, text=True, encoding="utf-8")
+        for line in (r.stdout or "").splitlines():
+            print("  " + line.strip())
+        return 0 if r.returncode == 0 else 1
+
     kind, exe = ROUTES[skill]
     if exe is None:
         print(f"  ·  {skill} 暂无独立 L1 检查器（只有全局符号门禁兜底），跳过。")
@@ -107,6 +152,11 @@ def main():
     print(f"  写作技能 {skill} → 用 {os.path.basename(exe)} 检查")
     if kind == "aws":
         cmd = [PY, "-X", "utf8", exe, "check", md]
+    elif kind == "khazix":
+        # 2026-11-13：本项目允许 KHX 体用 markdown 小标题与适度加粗
+        # （用户明确要求「可以用小标题，但风格仍按卡兹克」）。
+        # 这两个开关只放行结构与加粗；禁用词、标点、口语词密度仍然照查。
+        cmd = [PY, "-X", "utf8", exe, md, "--allow-heading", "--allow-bold"]
     else:
         cmd = [PY, "-X", "utf8", exe, md]
     r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")

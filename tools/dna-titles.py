@@ -11,8 +11,10 @@ import os
 import re
 from collections import Counter, OrderedDict
 
-SRC = r"C:\data\test\dsh-workbench\writing-dna\mimeng\refs\标题库.md"
-OUT = r"C:\data\test\dsh-workbench\writing-dna\mimeng\_meta\titles-stats.json"
+_PLUGIN = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_DNA = os.path.join(_PLUGIN, "writing-dna", "mimeng")
+SRC = os.path.join(_DNA, "refs", "标题库.md")
+OUT = os.path.join(_DNA, "_meta", "titles-stats.json")
 
 t = io.open(SRC, encoding="utf-8").read()
 sections = OrderedDict()

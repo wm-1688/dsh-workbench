@@ -7,9 +7,15 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 
-SCRIPT = r"C:\data\test\.dsh\skills\lieflat-less-ai-tone\scripts\check-translationese.py"
-TMP = r"C:\data\test\_measure"
+_SKILL_REL = os.path.join("skills", "lieflat-less-ai-tone", "scripts", "check-translationese.py")
+SCRIPT = next((p for p in (
+    os.path.join(os.environ.get("DSH_HOME", "").strip() or os.path.join(
+        os.path.expanduser("~"), ".dsh"), _SKILL_REL),
+    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), _SKILL_REL),
+) if os.path.isfile(p)), "")
+TMP = os.path.join(tempfile.gettempdir(), "_dsh_measure")
 
 
 def measure(md_path, label):
@@ -29,6 +35,8 @@ def measure(md_path, label):
 
 
 if __name__ == "__main__":
+    if len(sys.argv) < 3:
+        sys.exit("用法：python tools/measure-tone.py <md 文件> <标签>")
     md, label = sys.argv[1], sys.argv[2]
     rows, out = measure(md, label)
     print(f"  —— 标记频率（每千汉字）· {label} ——")

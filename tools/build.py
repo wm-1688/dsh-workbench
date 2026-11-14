@@ -10,12 +10,12 @@
     gen-materials.py       抓 7 天热榜归档 → lib/materials.snapshot.json
     workbench-db.py export 导出 SQLite 快照 → lib/db.snapshot.json
     gen-catalog.py          把技能包 + 素材 + 数据库 注入 → lib/client.js
-    check-docs.py           把文档的声明当断言，跟代码实际状态对账 ⛔ 不一致则中止
+    check-docs.py           把 README 的声明当断言，跟代码实际状态对账 ⛔ 不一致则中止
 
 **文档对账放在最后且会中止构建**：它是"文档不落后于代码"的机器闸门。
-2026-10-06 出现过两次文档与代码不符（文档停留在「数据层还没接」、
-写进文档的「6 张表」是 grep 数错的），靠"记得改文档"管不住，所以做成闸门。
-改了代码就要同步文档（README + DEVELOPMENT.md）；确实要临时跳过时用 --skip-doc-check，但要清楚为什么。
+2026-10-06 出现过两次文档与代码不符（README 停留在「数据层还没接」、
+写进 README 的「6 张表」是 grep 数错的），靠"记得改文档"管不住，所以做成闸门。
+改了代码就要同步 README；确实要临时跳过时用 --skip-doc-check，但要清楚为什么。
 
 改完界面后必须重启 DSH（client 半按模块 id 加载）。
 """
@@ -96,8 +96,9 @@ def check_writing_skills():
     names = [n for n, _ in items]
 
     roots = [
-        os.path.join(plugin, "skills"),          # 插件自带的技能库（整体打包时在这）
-        os.path.join(plugin, "..", "skills"),
+        # 插件自带 skills/ 优先：仓库与发行包都把技能打在插件里，
+        # 只查 ..\.dsh\skills 会在纯净安装环境下把技能全判成缺失。
+        os.path.join(plugin, "skills"),
         os.path.join(plugin, "..", ".dsh", "skills"),
         os.path.join(plugin, "..", ".dsh", "redfox-skills"),
         os.path.expanduser(os.path.join("~", ".dsh", "skills")),
@@ -148,15 +149,9 @@ def check_writing_skills():
 
 
 def workspace_drafts():
-    """草稿根目录。build.py 在 <插件>/tools/ 下，草稿在 <workspace>/drafts/。
-
-    工作区不一定是插件的上一级（DSH_WORKBENCH_HOME 可另行指定），
-    统一交给 ws_path 解析，避免装到 profile 里之后指错目录。
-    """
+    """草稿根目录。build.py 在 <插件>/tools/ 下，草稿在 <workspace>/drafts/。"""
     plugin = os.path.dirname(HERE)
-    sys.path.insert(0, HERE)
-    import ws_path
-    return os.path.join(ws_path.resolve_workspace(plugin), "drafts")
+    return os.path.join(plugin, "..", "drafts")
 
 
 def main():
@@ -177,10 +172,37 @@ def main():
     run("workbench-db.py", "export")
     run("gen-catalog.py")
 
+    # ══════════════════════════════════════════════════════
+    # 代码自身的两道闸门（2026-11-13 加）
+    #
+    # 为什么放在 check-docs 之前：这两项查的是「代码会不会在运行时挂」，
+    # 比文档一致性更根本 —— 文档对不上还能用，代码挂了界面直接白屏。
+    #
+    # 两个都是 `node --check` 查不出来的：语法合法、运行时崩溃。
+    # ══════════════════════════════════════════════════════
+
+    # ① 路由重复注册：DSH 对同一 path 只认第一次，第二条静默丢弃 → 那个方法永远 404
+    print("\n=== check_routes ===")
+    rc = run("check-routes.py")
+    if rc != 0:
+        print("\n❌ 有路由重复注册，构建中止。")
+        print("   · 原因：同一 path 注册两次，后一条被丢弃，对应方法报 404")
+        print("   · 修法：合并成一条 register，methods 加全，handler 里按 method 分流")
+        return 1
+
+    # ② 顶层常量写错名：运行时 ReferenceError，整个半边 JS 挂掉（白屏 / 面板消失）
+    print("\n=== check_symbols_defined ===")
+    rc = run("check-symbols-defined.py")
+    if rc != 0:
+        print("\n❌ 有未定义常量，构建中止。")
+        print("   · 原因：路径拼接里用了不存在的常量名（如 TOOLS_DIR 应为 PLUGIN_ROOT）")
+        print("   · 后果：运行时 ReferenceError，node 半边挂 → 界面白屏")
+        return 1
+
     rc = run("check-docs.py")
     if rc != 0 and "--skip-doc-check" not in sys.argv:
         print("\n❌ 文档与代码不一致，构建中止（界面数据其实已刷新，但请先修文档）。")
-        print("   · 同步文档里的表清单 / 路由清单 / 状态机 / 数字 / 命令 / 文件结构")
+        print("   · 同步 README 里的表清单 / 路由清单 / 状态机 / 数字 / 命令 / 文件结构")
         print("   · 确认要临时跳过：python tools/build.py --skip-doc-check")
         return 1
 
@@ -204,9 +226,9 @@ def main():
     # 而当时的三个检查器（符号/质感/结构）全是形式检查，一个都不查事实出处，
     # 于是编造的稿子一路绿灯。这道闸门补的就是这个洞。
     print("\n=== check_facts ===")
-    facts_targets = sorted(glob.glob(os.path.join(workspace_drafts(), "*", "draft.md")))
-    if facts_targets:
-        rc = run("check-facts.py", *facts_targets)
+    _facts_targets = sorted(glob.glob(os.path.join(workspace_drafts(), "*", "draft.md")))
+    if _facts_targets:
+        rc = run("check-facts.py", *_facts_targets)
     else:
         print("  （没有草稿，跳过）")
         rc = 0
@@ -221,9 +243,9 @@ def main():
     # （开头废话 / 结尾总结全文 / 空转过渡句 / 小节字数失衡）。
     # 语义判断（悬念够不够、每段是否只承担一个功能）交给骨架第⑥步的 Agent 自检。
     print("\n=== check_structure ===")
-    struct_targets = sorted(glob.glob(os.path.join(workspace_drafts(), "*", "draft.md")))
-    if struct_targets:
-        rc = run("check-structure.py", *struct_targets)
+    _struct_targets = sorted(glob.glob(os.path.join(workspace_drafts(), "*", "draft.md")))
+    if _struct_targets:
+        rc = run("check-structure.py", *_struct_targets)
     else:
         print("  （没有草稿，跳过）")
         rc = 0
@@ -240,15 +262,15 @@ def main():
     #   某些题材本来就不适合第一人称，某些选题字段本来就该放弃。
     #   硬卡会让所有稿子写成同一个模子。但每一条都该被看见。
     print("\n=== check_quality（提示，不阻断）===")
-    quality_targets = sorted(glob.glob(os.path.join(workspace_drafts(), "*", "draft.md")))
-    if quality_targets:
-        run_quiet("check-quality.py", *quality_targets)
+    _quality_targets = sorted(glob.glob(os.path.join(workspace_drafts(), "*", "draft.md")))
+    if _quality_targets:
+        run_quiet("check-quality.py", *_quality_targets)
     else:
         print("  （没有草稿，跳过）")
     print("\n=== check_topic_align（提示，不阻断）===")
-    align_targets = sorted(glob.glob(os.path.join(workspace_drafts(), "*", "draft.md")))
-    if align_targets:
-        run_quiet("check-topic-align.py", *align_targets)
+    _align_targets = sorted(glob.glob(os.path.join(workspace_drafts(), "*", "draft.md")))
+    if _align_targets:
+        run_quiet("check-topic-align.py", *_align_targets)
     else:
         print("  （没有草稿，跳过）")
 
@@ -259,10 +281,10 @@ def main():
     _thesis_dirs = sorted(d for d in glob.glob(os.path.join(workspace_drafts(), "*")) if os.path.isdir(d))
     if not _thesis_dirs:
         print("  （没有草稿，跳过）")
-        rc = 0
+        _rc_thesis = 0
     else:
-        rc = run("check-thesis.py", *_thesis_dirs)
-    if rc != 0 and "--skip-thesis-check" not in sys.argv:
+        _rc_thesis = run("check-thesis.py", *_thesis_dirs)
+    if _rc_thesis != 0 and "--skip-thesis-check" not in sys.argv:
         print("\n❌ 有稿子的论点不一致，构建中止。")
         print("   · 判据：主论点落地率、结尾回扣开头、单节占比、每节与主论点的关联度")
         print("   · 修法：找出跑题的那一节删掉或压成一句；结尾改成回扣主论点，不要另起新观点")
@@ -275,11 +297,11 @@ def main():
     print("\n=== check_cover ===")
     # check-cover 要的是目录列表，不是 draft.md 文件路径
     _cover_dirs = sorted(d for d in glob.glob(os.path.join(workspace_drafts(), "*")) if os.path.isdir(d))
-    if not _cover_dirs:
+    if _cover_dirs:
+        rc = run("check-cover.py", *_cover_dirs)
+    else:
         print("  （没有草稿，跳过）")
         rc = 0
-    else:
-        rc = run("check-cover.py", *_cover_dirs)
     if rc != 0 and "--skip-cover-check" not in sys.argv:
         print("\n❌ 有封面的构图不合格，构建中止。")
         print("   · 判据见 配图路线.md 第四章：封面必须整幅画面，不允许纯色留白区")
@@ -292,12 +314,12 @@ def main():
     # 后半段连续 1324 字无图。这类问题靠肉眼数不出来，必须做成闸门。
     # 只检查已经有图位的稿子（queued 阶段还没写，不参与）。
     print("\n=== check_image_layout ===")
-    layout_targets = sorted(glob.glob(os.path.join(workspace_drafts(), "*", "draft.md")))
-    if not layout_targets:
-        print("  （没有草稿，跳过配图位置检查）")
-        rc = 0
+    _layout_targets = sorted(glob.glob(os.path.join(workspace_drafts(), "*", "draft.md")))
+    if _layout_targets:
+        rc = run("check-image-layout.py", *_layout_targets)
     else:
-        rc = run("check-image-layout.py", *layout_targets)
+        print("  （没有草稿，跳过）")
+        rc = 0
     if rc != 0 and "--skip-layout-check" not in sys.argv:
         print("\n❌ 有草稿的配图位置不合格，构建中止。")
         print("   · 判据见 配图路线.md「图位数量与位置」")

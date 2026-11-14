@@ -29,7 +29,9 @@ def extract(path):
 
 
 def main():
-    paths = sys.argv[1:] or [r"C:\data\test\_tmp_gzh.html"]
+    if not sys.argv[1:]:
+        sys.exit("用法：python tools/gzh-rank.py <榜单 HTML> [更多 HTML...]")
+    paths = sys.argv[1:]
     for p in paths:
         if not os.path.exists(p):
             print(f"  ❌ 不存在 {p}")

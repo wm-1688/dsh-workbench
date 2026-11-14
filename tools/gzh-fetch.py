@@ -40,6 +40,17 @@ CATEGORIES = [
 
 
 def api_key():
+    try:
+        import appconfig
+        v = appconfig.get_secret("redfoxKey")
+        if v:
+            return v
+    except Exception:
+        pass
+    return _api_key_legacy()
+
+
+def _api_key_legacy():
     k = os.environ.get("REDFOX_API_KEY", "").strip()
     if k:
         return k
