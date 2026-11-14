@@ -430,7 +430,13 @@ SEED_STYLES = [
 """,
     },
 
-    # ── 以下三条从依赖技能里提取，随技能成套使用 ──
+    # ── 以下三条都是系统内置风格，但来源不同 ──
+    # MS-006 卡兹克体、MS-007 娱乐叙事体：从依赖技能里提取（source.type=skill-extracted），
+    #   分别对应 khazix-writer 与 write-entertainment-wechat-articles，随技能成套使用。
+    # MS-008 人格叙事体：不依赖任何技能，是「语言质感与文气」方法论（video-04）的直接落地，
+    #   source.type 写的是 video-04。它被 check-draft.py / check-texture.py 当作
+    #   「克制风格」的判定依据（选了它就跳过 aws 配额，改跑质感检查）。
+    #
     # 为什么必须内置：client.template.js 的 WRITING_SKILLS 给
     #   write-entertainment-wechat-articles 写了 defaultStyle='MS-007'、
     #   khazix-writer 写了 defaultStyle='MS-006'，
