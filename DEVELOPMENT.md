@@ -443,7 +443,7 @@ python tools/pack.py                               # 打包 → dist/dsh-workben
 | `/api/workbench/xhs` | GET / POST | **小红书爆文**：GET 读 `xhs-hot.snapshot.json`（同样空骨架兜底）；POST 跑 `collect-xhs.py` 抓 25 个分类的单日爆款（约 60 秒） |
 | `/api/workbench/inbox` | POST | **手动投料**：文字 + 截图落盘到 `materials/inbox/`，返回记录供界面投递分析指令 |
 | `/api/workbench/health` | GET | 数据层自检 |
-| `/api/workbench/image-catalog` | GET | **风格库索引**：324 风格 / 161 图型 / 36 主题色 / 角色，由 `image-gen.py catalog` 归一化，进程内缓存 |
+| `/api/workbench/image-catalog` | GET | **风格库索引**：367 风格 / 170 图型 / 36 主题色 / 角色，由 `image-gen.py catalog` 归一化，进程内缓存 |
 | `/api/workbench/image-asset` | GET | **读图片二进制**：`from=skill` 读技能安装目录，`from=workspace` 读生成物；**两个根都做越界检查** |
 | `/api/workbench/image-jobs` | GET / POST | 生图任务：GET 列表（连资产与用量一起给）/ POST `action:'preview'` 组词、`action:'enqueue'` 入队 |
 | `/api/workbench/image-run` | POST | **起一个后台生成进程**：单张 30–70 秒，不能挂在请求里等；界面轮询任务状态 |
@@ -680,7 +680,7 @@ dsh-workbench/
 │   ├── image-gen.py          生图执行器（索引归一化 / 组词 / 调接口）；**功能设计的接缝在这**
 │   ├── appconfig.py          统一配置读取层（settings 表 → 环境变量 → aws.env → 注册表）
 │   ├── init-settings.py      初始化 settings 表 + 从环境变量/aws.env 迁移已有密钥
-│   ├── ws_path.py            工作区解析（DSH_HOME / 工作区根，其他脚本共用）
+│   ├── ws_path.py            工作区解析（DSH_HOME / 工作区根，其他脚本共用；**Node 侧同规则**）
 │   ├── fetch-skills.py       从上游补下载技能（按 skills-manifest.json）
 │   ├── pack.py                打包插件 → dist/dsh-workbench-<版本>.zip
 │   └── wb.py                 调 api 的简写助手（Agent 用）
@@ -697,6 +697,28 @@ dsh-workbench/
 ```
 
 **改界面必须走 `client.template.js` + `build.py`**，直接改 `client.js` 会在下次生成时被覆盖。
+
+### 工作区解析：Python 与 Node 必须同规则
+
+工作区根目录**不能**用 `插件目录/..` 硬编码。那行只在开发环境成立
+（插件放在 `<workspace>/dsh-workbench/` 下）；用户装到别处时，工作区会被算成
+插件的父目录，读稿、存稿、图片输出全部落到包外面，功能整体失效。
+
+两边各有一份实现，**规则逐条对齐，改一边必须改另一边**：
+
+| | 实现位置 |
+|---|---|
+| Python | `tools/ws_path.py` → `resolve_workspace(plugin_dir)` |
+| Node | `lib/index.js` → `resolveWorkspace()`，结果存为 `WORKSPACE` 常量 |
+
+解析顺序（两处完全一致）：
+
+1. 环境变量 `DSH_WORKBENCH_HOME` —— 显式指定，最高优先级
+2. 插件上级目录下有 `drafts/` 或 `workbench/` —— 开发环境，沿用原行为
+3. 都不满足 —— 安装环境，用插件目录自己（数据落在插件目录内）
+
+`lib/index.js` 里所有路径（`drafts`、`workbench`、`image-studio`、`aws.env`、
+`.llm-token`、`materials/inbox`）都由 `WORKSPACE` 派生，没有第二处硬编码。
 
 ---
 
@@ -1076,19 +1098,20 @@ GET  {host}/v1/api/result?id=<task_id>    → running/… → succeeded → resu
 `POLL_TIMEOUT = 420` 秒 / `POLL_INTERVAL = 3.0` 秒是照 GRS AI 的出图耗时定的，
 换到更慢的平台要一起调。改完先拿一张图跑通再批量，别直接压任务。
 
-### 七个模块（都是顶层 tab，不合并）
+### 八个模块（都是顶层 tab，不合并）
 
 **顺序 = 模块的优先级**：`漫图创作` 排第一，所以打开工作台直接落在创作页（它也确实是这个工作台的主线）。
 
 | 模块 | 是什么 |
 |---|---|
 | **漫图创作** | **左表单 + 右渲染预览的工作室**（见第十五节）：创作模式 / 出图模式与留白 / 主题 / 画幅与情绪 / 视觉资产与风格搭配。**默认展示页** |
-| 风格库 | 324 种手绘风格。分类筛选 + 搜索（**纯数字按编号精确搜**）；点卡片开抽屉看大图、复制提示词、选为生成 |
-| 图型库 | 161 种**排版图型模板**。每种给一套构图与版式；选中的原文会逐字拼进提示词，出图就按这个排版来 |
+| 风格库 | 367 种手绘风格（FA–FI 九组）。CS 组是用户自建，不随包分发。分类筛选 + 搜索（**纯数字按编号精确搜**）；点卡片开抽屉看大图、复制提示词、选为生成 |
+| 图型库 | 170 种**排版图型模板**。每种给一套构图与版式；选中的原文会逐字拼进提示词，出图就按这个排版来 |
 | 主色调 | 36 种经典单色。选中后写进提示词的「主题色」段 |
 | 角色资产库 | **角色 / 道具 / 场景三个子库**。可从生成物一键归档、可作垫图引用。图库目录的**挂载入口不在这里**（在漫图创作分组④，见第十四节） |
 | 我的创作 | **创作产出**：漫画流 / 电商详情页 / 单张出图。卡片网格 + 下载 + 存入资产库 + 统计。**不含角色/道具/场景基准图**（见下） |
 | 技能包 | `image` 包，5 个阶段 |
+| 设置 | 生图通道 / 模型 / 文本模型 / Key 的配置页（见第九节） |
 
 > **「资产库」改名为「我的创作」（2026-10-08）。** 它装的是"你创作出来的东西"，
 > 而「角色 / 道具 / 场景」是另一回事 —— 那是**可复用的素材**。两个都叫"资产库"时，
@@ -1113,7 +1136,7 @@ GET  {host}/v1/api/result?id=<task_id>    → running/… → succeeded → resu
 >    那行子切换长得像页头装饰。**合并入口 = 让人以为只做了第一个。**
 > 2. 改叫「画廊」也不够：模块名要能一对一地说出它装的是什么，所以拆成平级 tab。
 >
-> **第三次是定位错了。** 161 个图型曾被命名成「画廊广场」，并按"生成案例参考"来写文案 ——
+> **第三次是定位错了。** 图型曾被命名成「画廊广场」，并按"生成案例参考"来写文案 ——
 > 这是把**模板库**误解成了**作品展示**。实际情况是：图型就是**排版模板**，
 > 选中后原文逐字进提示词，出图就照这个版式来；不选中它就不生效。
 > 现在叫「**图型库**」，文案也改成了模板口径。
@@ -1121,7 +1144,7 @@ GET  {host}/v1/api/result?id=<task_id>    → running/… → succeeded → resu
 
 ## 十四、角色资产库（角色 / 道具 / 场景）
 
-**它不是画廊，是资产库。** 区别在于：图型/风格/色卡是只读的预置库（324 风格/161 图型/36 色卡），
+**它不是画廊，是资产库。** 区别在于：图型/风格/色卡是只读的预置库（367 风格/170 图型/36 色卡），
 而资产库要能往里加东西、并且这些基准图要在**出图时当垫图**用 —— 保持主体形象一致、跨媒介不漂移。
 
 ### 数据层：复用技能自带的，不另造
@@ -1199,7 +1222,7 @@ GET  {host}/v1/api/result?id=<task_id>    → running/… → succeeded → resu
 
 | 编号 | 形态 | 谁在用 |
 |---|---|---|
-| **全局序号** | `001` – `324` | 技能契约、用户心智、`SKILL.md` 的「a 001–324 hand-drawn style number」 |
+| **全局序号** | `001` – `367` | 技能契约、用户心智、`SKILL.md` 的「a 001–367 hand-drawn style number」 |
 | **组内 ID** | `FA-001`、`FE-059` | 库里真实文件名、卡片上的 ID |
 
 两套靠 `references/style_alias_map.json` 对应（例：**257 → FE-059**，324 → FG-018）。
@@ -1251,7 +1274,7 @@ python tools/image-gen.py asset-save --category characters --name "黑猫侍者"
 ### 图型（图型库）：完整生成方法
 
 **每个图型都有完整的双语提示词**，不是只有一张缩略图：`references/layouts/<ID>.md` 里是
-`<!-- zh -->` / `<!-- en -->` 两段原文（161 个文件、165.7 KB、**双语标记 162/162 齐全**），
+`<!-- zh -->` / `<!-- en -->` 两段原文（170 个文件、179.8 KB、**双语标记 170/170 齐全**），
 最长的是 SC-022（9.8 KB）和 SC-021（8.8 KB）——那两类是「高维动态解析型」，
 文件本身就是一套完整的构图决策框架，不是一句话。
 
@@ -1269,12 +1292,12 @@ python tools/image-gen.py asset-save --category characters --name "黑猫侍者"
 所以原文与后缀都由 `image-gen.py` 提供，界面不自己拼；`GRAPHIC_TEXT_SUFFIX` 是从
 SKILL.md 里原样提取的（118 字），改它等于改图型的实际行为——README 里这条是断言，不是描述。
 
-**按需读取，不塞进首屏**：161 个图型原文共 165 KB，全量塞进索引会让首屏包体翻倍，
+**按需读取，不塞进首屏**：170 个图型原文共 180 KB，全量塞进索引会让首屏包体翻倍，
 而用户一次只看一个。所以走 `GET /api/workbench/image-catalog?layout=<ID>`
 （**没有新开路由**，避免 README 的路由断言跟着动）。
 
-> **数据里的一个孤儿**：`references/layouts/IG-036.md` 存在（索引 `layouts.json` 161 条里没有它），
-> 原画廊也没有收录。工作台与画廊一致，以索引为准；这是技能包自身的数据不一致，未擅自补进去。
+> **索引与磁盘已对齐**：`layouts.json` 170 条与 `references/layouts/*.md` 170 个文件一一对应，
+> 无孤儿、无缺号（历史遗留的 `IG-036` 孤儿已在技能包更新中补入索引）。
 
 ### 已知边界 / 留给下一次设计
 

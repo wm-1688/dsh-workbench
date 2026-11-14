@@ -9,8 +9,8 @@
 会自动做的事：
     1. 检查 Python 版本与必需目录
     2. 初始化数据库（10 张业务表）
-    3. 生成 client.js（界面代码）
-    4. 安装依赖技能（包内自带，复制即可）
+    3. 安装依赖技能（包内自带，复制即可）
+    4. 生成 client.js（界面代码，需先装完技能才能扫出技能库）
     5. 检查 DSH 插件挂载情况，给出精确的下一步指令
     6. 生成一份安装报告 install-report.md
 
@@ -140,33 +140,8 @@ def main():
         say(out1[-400:] or out2[-400:])
         return 1
 
-    # ── 3. 生成界面代码 ──
-    step(3, "生成界面代码 client.js")
-    client = os.path.join(HERE, "lib", "client.js")
-    if os.path.isfile(client):
-        say(f"✅ 已存在（{os.path.getsize(client)//1024}KB），重新生成")
-    # 先导出数据快照（界面靠它显示内容），再生成 client.js
-    okexp, outexp = run("workbench-db.py", "export")
-    snap = os.path.join(HERE, "lib", "db.snapshot.json")
-    if okexp and os.path.isfile(snap):
-        say(f"✅ 数据快照（{os.path.getsize(snap)//1024}KB）")
-    else:
-        say("⚠️ 数据快照生成失败，界面可能显示为空")
-        say(outexp[-300:])
-
-    ok3, out3 = run("gen-catalog.py")
-    if ok3 and os.path.isfile(client):
-        say(f"✅ 生成成功（{os.path.getsize(client)//1024}KB）")
-        report.append(f"界面代码：{os.path.getsize(client)//1024}KB")
-        if os.path.isfile(snap):
-            report.append(f"数据快照：{os.path.getsize(snap)//1024}KB")
-    else:
-        say("❌ 生成失败")
-        say(out3[-600:])
-        return 1
-
-    # ── 4. 安装依赖技能 ──
-    step(4, "安装依赖技能")
+    # ── 3. 安装依赖技能 ──
+    step(3, "安装依赖技能")
     # 插件硬引用 9 个技能。不装的话界面能开，但写稿/检查/配图全报错。
     # 统一装到 $DSH_HOME/skills/ —— gen-catalog.py 和 lib/index.js 都优先找这里，
     # 不依赖 PLUGIN/..（那个在安装环境是错的）。
@@ -224,6 +199,31 @@ def main():
         say(f"⚠️ 缺少必需技能: {lack}")
         say("   插件能启动，但写稿/检查会失败")
         report.append(f"技能：⚠️ 缺必需技能 {lack}")
+
+    # ── 4. 生成界面代码 ──
+    step(4, "生成界面代码 client.js")
+    client = os.path.join(HERE, "lib", "client.js")
+    if os.path.isfile(client):
+        say(f"✅ 已存在（{os.path.getsize(client)//1024}KB），重新生成")
+    # 先导出数据快照（界面靠它显示内容），再生成 client.js
+    okexp, outexp = run("workbench-db.py", "export")
+    snap = os.path.join(HERE, "lib", "db.snapshot.json")
+    if okexp and os.path.isfile(snap):
+        say(f"✅ 数据快照（{os.path.getsize(snap)//1024}KB）")
+    else:
+        say("⚠️ 数据快照生成失败，界面可能显示为空")
+        say(outexp[-300:])
+
+    ok3, out3 = run("gen-catalog.py")
+    if ok3 and os.path.isfile(client):
+        say(f"✅ 生成成功（{os.path.getsize(client)//1024}KB）")
+        report.append(f"界面代码：{os.path.getsize(client)//1024}KB")
+        if os.path.isfile(snap):
+            report.append(f"数据快照：{os.path.getsize(snap)//1024}KB")
+    else:
+        say("❌ 生成失败")
+        say(out3[-600:])
+        return 1
 
     # ── 5. 检查 DSH 挂载 ──
     step(5, "检查 DSH 挂载")

@@ -169,6 +169,15 @@ def main():
         print("  ❌ 产物里还有 placeholder，禁止发布")
         return 1
 
+    # 4b. 清掉负边距 —— 微信编辑器认不了这种写法，会报「存在溢出问题」
+    #     （详见文件头注释里 2026-11-15 那条）
+    if html:
+        fixed, nneg = re.subn(r"margin:\s*0\s+-\d+px", "margin:0 0", html)
+        if nneg:
+            html = fixed
+            wr(os.path.join(d, "article.html"), html)
+            print(f"  4b) 清掉 {nneg} 处负边距（微信会判为溢出）")
+
     # 5. 符号校验
     r = subprocess.run([PY, "-X", "utf8", SYMCHK, d], capture_output=True,
                        text=True, encoding="utf-8")
