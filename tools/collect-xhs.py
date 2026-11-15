@@ -26,7 +26,13 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import winreg
+
+# winreg 只有 Windows 有。macOS / Linux 上直接 import 会抛 ModuleNotFoundError，
+# 整个脚本起不来；降级成 None 后，注册表那一级回退自动跳过，其余来源照常。
+try:
+    import winreg  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - 非 Windows
+    winreg = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLUGIN = os.path.dirname(HERE)
@@ -64,14 +70,15 @@ def _api_key_legacy():
     key = os.environ.get("REDFOX_API_KEY")
     if key:
         return key
-    for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
-        try:
-            with winreg.OpenKey(hive, r"Environment") as h:
-                val, _ = winreg.QueryValueEx(h, "REDFOX_API_KEY")
-                if val:
-                    return val
-        except OSError:
-            pass
+    if winreg is not None:      # 非 Windows 没有注册表，跳过这一级
+        for hive in (winreg.HKEY_CURRENT_USER, winreg.HKEY_LOCAL_MACHINE):
+            try:
+                with winreg.OpenKey(hive, r"Environment") as h:
+                    val, _ = winreg.QueryValueEx(h, "REDFOX_API_KEY")
+                    if val:
+                        return val
+            except OSError:
+                pass
     raise SystemExit("缺少 REDFOX_API_KEY：请设环境变量或写到用户环境变量里")
 
 

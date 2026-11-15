@@ -1,6 +1,6 @@
 # dsh-workbench · 墨鱼创作工作台
 
-**当前版本：`0.2.0`**（初始版本，后续持续迭代）
+**当前版本：`0.2.1`**
 
 DeepSeek Harness（DSH）桌面端插件。把公众号内容生产的完整链路收进一个面板：
 **找选题 → 写稿 → 审稿 → 配图 → 排版 → 发到草稿箱**。
@@ -14,7 +14,7 @@ DeepSeek Harness（DSH）桌面端插件。把公众号内容生产的完整链�
 
 | 项目 | 说明 |
 |---|---|
-| 版本 | `0.2.0` |
+| 版本 | `0.2.1` |
 | 形态 | DSH 插件（bundle patch + web client 半 + node 半） |
 | 面向 | 公众号运营、自媒体作者、内容团队 |
 | 核心 | 三个工作台：**技能库**、**公众号工作台**、**生图工作台** |
@@ -246,6 +246,7 @@ dsh-workbench/
 
 | 项 | 要求 |
 |---|---|
+| 系统 | Windows / macOS / Linux |
 | Python | 3.9 或更高（安装器会自检） |
 | DSH | 桌面端已安装并至少启动过一次 |
 | 磁盘 | 约 120 MB（含技能库） |
@@ -312,20 +313,29 @@ profile 位置：`%USERPROFILE%\.dsh\profiles\desktop\`
 pnpm install
 ```
 
-#### 方式 B：手工建目录联接（免 pnpm，推荐作为备选）
+#### 方式 B：手工建软链（免 pnpm，推荐作为备选）
 
 本插件**零运行时依赖**（`package.json` 没有 `dependencies`，四个 peer 全部 optional），
 `pnpm install` 在这里只干一件事：把插件目录链到 `node_modules`。这一步手工也能做：
+
+**Windows**（目录联接 junction，**不需要管理员权限**）：
 
 ```powershell
 cmd /c mklink /J "%USERPROFILE%\.dsh\profiles\desktop\node_modules\dsh-workbench" "C:\path\to\dsh-workbench"
 ```
 
-`/J` 是目录联接（junction），**不需要管理员权限**。若提示已存在，先删掉旧的再建。
+**macOS / Linux**（符号链接）：
+
+```bash
+mkdir -p ~/.dsh/profiles/desktop/node_modules
+ln -sfn "/path/to/dsh-workbench" ~/.dsh/profiles/desktop/node_modules/dsh-workbench
+```
+
+若提示已存在，先删掉旧的再建。
 
 做完启动 DSH，左侧栏会出现「公众号工作台」与「生图工作台」。
 
-#### 如果 pnpm 报 EPERM
+#### 如果 pnpm 报 EPERM（Windows）
 
 ```
 [EPERM] rename '...\package.json.358186889' -> '...\package.json'

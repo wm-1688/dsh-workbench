@@ -30,6 +30,8 @@ from datetime import datetime
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOLS = os.path.join(HERE, "tools")
 PY = sys.executable
+# 只有 Windows 用 mklink /J 建目录联接；macOS / Linux 走 ln -sfn。
+IS_WIN = platform.system() == "Windows"
 
 
 def say(msg):
@@ -220,8 +222,17 @@ def main():
         report.append(f"界面代码：{os.path.getsize(client)//1024}KB")
         if os.path.isfile(snap):
             report.append(f"数据快照：{os.path.getsize(snap)//1024}KB")
+    elif os.path.isfile(client):
+        # 包里自带占位版 client.js，DSH 靠它才能加载客户端模块。
+        # 生成失败不致命：技能库会是空的，但工作台照常能开。
+        say("⚠️ 重新生成失败，沿用包内自带的 client.js")
+        say("   界面能打开，但技能库可能是空的；可稍后单独重跑：")
+        say(f"   {PY} {os.path.join(TOOLS, 'gen-catalog.py')}")
+        say(out3[-400:])
+        report.append("界面代码：沿用包内自带版本（重新生成失败）")
     else:
-        say("❌ 生成失败")
+        say("❌ 生成失败，且包内没有 client.js")
+        say("   DSH 启动时会报 “exports no ./client bundle”，插件加载不了。")
         say(out3[-600:])
         return 1
 
@@ -254,14 +265,19 @@ def main():
         say("     dsh.profile.bundles 追加 \"dsh-workbench\"")
         say("")
         say("  3) 建链接（二选一）：")
-        say("     A) 在 profile 目录跑 pnpm install")
-        say("     B) 免 pnpm（本插件零运行时依赖）：")
-        say("        cmd /c mklink /J \"%USERPROFILE%\\.dsh\\profiles\\desktop\\node_modules\\dsh-workbench\" \"" + HERE + "\"")
+        say("     A) 在 profile 目录跑 pnpm install（各平台通用，推荐）")
+        say("     B) 免 pnpm（本插件零运行时依赖，手动建软链）：")
+        if IS_WIN:
+            say("        cmd /c mklink /J \"%USERPROFILE%\\.dsh\\profiles\\desktop\\node_modules\\dsh-workbench\" \"" + HERE + "\"")
+        else:
+            say("        mkdir -p ~/.dsh/profiles/desktop/node_modules")
+            say("        ln -sfn \"" + HERE + "\" ~/.dsh/profiles/desktop/node_modules/dsh-workbench")
         say("")
         say("  装完启动 DSH，左侧栏会出现「公众号工作台」与「生图工作台」。")
         say("")
-        say("  若 pnpm 报 [EPERM] rename ...package.json：不是权限坏了，是文件被占用。")
-        say("  先确认 DSH 退干净，或直接用上面的方式 B 绕开 pnpm。")
+        if IS_WIN:
+            say("  若 pnpm 报 [EPERM] rename ...package.json：不是权限坏了，是文件被占用。")
+            say("  先确认 DSH 退干净，或直接用上面的方式 B 绕开 pnpm。")
 
     # ── 6. 生成报告 ──
     step(6, "生成安装报告")
@@ -297,7 +313,7 @@ def main():
         "",
         "## 下一步",
         "",
-        "1. **让 DSH 加载插件**（见上面第 4 步的说明）",
+        "1. **让 DSH 加载插件**（见上面第 5 步的说明）",
         "2. 重启 DSH，侧边栏会出现「技能库」「公众号工作台」「生图工作台」",
         "3. 首次使用前，可选：抓一次热榜素材",
         "",
@@ -317,7 +333,7 @@ def main():
         "数据默认放在插件目录内。想换位置就设环境变量：",
         "",
         "```",
-        "DSH_WORKBENCH_HOME=D:\\my-workbench",
+        "DSH_WORKBENCH_HOME=" + ("D:\\my-workbench" if IS_WIN else "/Users/you/my-workbench"),
         "```",
         "",
     ]
@@ -331,7 +347,7 @@ def main():
     print("  ══════════════════════════════════════════════════")
     print()
     print("   最后一步：让 DSH 加载这个插件，然后重启 DSH。")
-    print("   不确定怎么装？把上面第 4 步那段话发给 AI 就行。")
+    print("   不确定怎么装？把上面第 5 步那段话发给 AI 就行。")
     print()
     return 0
 

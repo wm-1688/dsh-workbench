@@ -25,7 +25,13 @@
 import io
 import os
 import sqlite3
-import winreg
+
+# winreg 只有 Windows 有。macOS / Linux 上直接 import 会抛 ModuleNotFoundError，
+# 整个脚本起不来；降级成 None 后，注册表那一级回退自动跳过，其余来源照常。
+try:
+    import winreg  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - 非 Windows
+    winreg = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLUGIN = os.path.dirname(HERE)
@@ -83,6 +89,8 @@ def _env_file():
 
 
 def _registry(name):
+    if winreg is None:      # 非 Windows：没有注册表这一级
+        return ""
     for root, path in [
         (winreg.HKEY_CURRENT_USER, "Environment"),
         (winreg.HKEY_LOCAL_MACHINE,

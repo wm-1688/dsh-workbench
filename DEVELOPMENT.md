@@ -1,6 +1,6 @@
 # dsh-workbench · 开发文档
 
-**当前版本：`0.2.0`**
+**当前版本：`0.2.1`**
 
 本文件面向**开发者与维护者**：表结构、路由、文件结构、命令速查、设计取舍与踩坑记录。
 
@@ -655,7 +655,7 @@ dsh-workbench/
 │   ├── vd744-index.json      VD744 语料逐条索引（_tmp/vd744-group.py 输出，带 A/B/C/D 安全分级）
 │   ├── vd744-topics.md       VD744 分组清单（人看；A 级可用选题按主题列）
 │   ├── topics.generated.json 当日选题生成结果（gen-topics.py 输出：分数/角度/待查证）
-│   └── client.js             生成物（**不要手改**，由 tools/build.py 生成）
+│   └── client.js             生成物（**不要手改**，由 tools/build.py 生成；**但必须入库**，见下）
 ├── tools/
 │   ├── build.py              一条命令刷新：抓热榜 → 导出 DB → 生成 client.js → **文档对账**
 │   ├── check-docs.py         README 漂移检测（把文档声明当断言，跟代码对账）⛔
@@ -724,6 +724,28 @@ dsh-workbench/
 
 **改界面必须走 `client.template.js` + `build.py`**，直接改 `client.js` 会在下次生成时被覆盖。
 
+### `lib/client.js` 必须入库（否则 DSH 起不来）
+
+`package.json` 的 `exports` 里声明了 `"./client": { "default": "./lib/client.js" }`，
+DSH 启动时会按 `dsh.client` 声明去读这个文件。**文件不存在就直接抛错**：
+
+```
+client-modules: dsh-workbench declares dsh.client but exports no "./client" bundle
+→ MissingClientBundleError: client bundle not found; run `pnpm run build` before launch
+→ ClientPackageCompositionError → client-hmr 缺 clientModules 服务 → 整个应用起不来
+```
+
+`ClientModuleRegistry` 只在 `ENOENT` 之外做兜底，缺文件属于硬失败；而本插件
+`package.json` 里 **`scripts` 是 null**，DSH 提示的 `pnpm run build` 根本不存在。
+所以仓库里必须存一份 `lib/client.js`：
+
+- 入库的是**占位版**（`SKILL_REGISTRY.skills` 为空、12 个阶段齐全、无任何本机路径）
+- 用户装完跑 `install.py` 第 4 步，会按本机技能目录重新生成真实版本覆盖它
+- 生成失败也不致命，`install.py` 会沿用包内自带版本，工作台能开、只是技能库为空
+
+`.gitignore` 里**不能**再出现裸 `client.js`——历史上正是这条把 `lib/client.js` 一起忽略了，
+导致 macOS 用户装完闪退。
+
 ### 工作区解析：Python 与 Node 必须同规则
 
 工作区根目录**不能**用 `插件目录/..` 硬编码。那行只在开发环境成立
@@ -755,19 +777,22 @@ dsh-workbench/
 2. profile 的 `package.json`：`dependencies` 加 `"dsh-workbench": "link:<插件绝对路径>"`，
    `dsh.profile.bundles` 数组**追加** `"dsh-workbench"`（别覆盖原有项）
 3. 建立链接，二选一：
-   - `pnpm install`（在 profile 目录）
-   - `cmd /c mklink /J "<profile>\node_modules\dsh-workbench" "<插件绝对路径>"` —— 免 pnpm
+   - `pnpm install`（在 profile 目录，各平台通用）
+   - 手动建软链，免 pnpm：
+     - Windows：`cmd /c mklink /J "<profile>\node_modules\dsh-workbench" "<插件绝对路径>"`
+     - macOS / Linux：`ln -sfn "<插件绝对路径>" ~/.dsh/profiles/desktop/node_modules/dsh-workbench`
 4. 启动 DSH，看左侧栏
 
 ### 为什么可以跳过 pnpm
 
 本插件 `package.json` **没有 `dependencies` 字段**，四个 peerDependencies 全部
 `optional: true`。`pnpm install` 在这里唯一的作用就是把插件目录链进 `node_modules`，
-用 `mklink /J` 等价替代（junction 不需要管理员权限）。
+用软链等价替代：Windows 用 `mklink /J`（junction，不需要管理员权限），
+macOS / Linux 用 `ln -sfn`。
 
 装完 `node_modules/dsh-workbench` 应是一个目录联接，指向插件根目录。
 
-### EPERM rename 报错
+### EPERM rename 报错（Windows）
 
 ```
 [EPERM] rename '...\package.json.358186889' -> '...\package.json'

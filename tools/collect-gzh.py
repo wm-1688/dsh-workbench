@@ -30,7 +30,13 @@ import os
 import re
 import sys
 import urllib.request
-import winreg
+
+# winreg 只有 Windows 有。macOS / Linux 上直接 import 会抛 ModuleNotFoundError，
+# 整个脚本起不来；降级成 None 后，注册表那一级回退自动跳过，其余来源照常。
+try:
+    import winreg  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - 非 Windows
+    winreg = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLUGIN = os.path.dirname(HERE)
@@ -73,18 +79,19 @@ def _api_key_legacy():
     key = (os.environ.get("REDFOX_API_KEY") or "").strip()
     if key:
         return key
-    for root, path, name in [
-        (winreg.HKEY_CURRENT_USER, "Environment", "REDFOX_API_KEY"),
-        (winreg.HKEY_LOCAL_MACHINE,
-         r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment", "REDFOX_API_KEY"),
-    ]:
-        try:
-            with winreg.OpenKey(root, path) as h:
-                v = (winreg.QueryValueEx(h, name)[0] or "").strip()
-                if v:
-                    return v
-        except OSError:
-            continue
+    if winreg is not None:      # 非 Windows 没有注册表，跳过这一级
+        for root, path, name in [
+            (winreg.HKEY_CURRENT_USER, "Environment", "REDFOX_API_KEY"),
+            (winreg.HKEY_LOCAL_MACHINE,
+             r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment", "REDFOX_API_KEY"),
+        ]:
+            try:
+                with winreg.OpenKey(root, path) as h:
+                    v = (winreg.QueryValueEx(h, name)[0] or "").strip()
+                    if v:
+                        return v
+            except OSError:
+                continue
     raise RuntimeError("缺少 REDFOX_API_KEY（环境变量或 HKCU\\Environment 都没有）")
 
 

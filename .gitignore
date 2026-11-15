@@ -15,7 +15,11 @@ pnpm-debug.log*
 *.bak
 *.db
 *.db-journal
-client.js
+# lib/client.js 是界面代码的构建产物，但**必须入库**：
+# package.json 的 exports["./client"] 指向它，DSH 启动时会读。
+# 文件缺失时 DSH 抛 "declares dsh.client but exports no ./client bundle"，
+# 整个客户端模块加载失败、应用起不来（macOS 上表现为闪退）。
+# 仓库里存的是占位版（技能列表为空），装完跑 install.py 会按本机技能重新生成。
 
 # 凭证
 .env

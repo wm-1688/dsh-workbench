@@ -1,6 +1,6 @@
 {
   "name": "dsh-workbench",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "墨鱼创作工作台 · DSH 插件：公众号内容生产面板（选题 / 写稿 / 审稿 / 排版 / 配图 / 发布）",
   "type": "module",

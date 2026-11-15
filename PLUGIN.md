@@ -2,7 +2,7 @@
 
 > 一个跑在 [DSH](https://github.com/deepseek-ai) 里的墨鱼创作工作台。从选题、写稿、审稿、排版到配图，把一条完整的创作流水线装进一个界面。
 
-[![版本](https://img.shields.io/badge/version-0.2.0-blue)]()
+[![版本](https://img.shields.io/badge/version-0.2.1-blue)]()
 [![Python](https://img.shields.io/badge/python-3.9%2B-brightgreen)]()
 [![平台](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)]()
 
@@ -67,8 +67,8 @@
 
 ```bash
 # 1. 解压
-unzip dsh-workbench-0.2.0.zip
-cd dsh-workbench-0.2.0
+unzip dsh-workbench-0.2.1.zip
+cd dsh-workbench-0.2.1
 
 # 2. 一键安装（会自动装插件依赖的技能）
 python install.py
@@ -79,7 +79,7 @@ python install.py
 1. 检查 Python 与目录完整性
 2. 初始化数据库（10 张业务表）并预置 19 个设置项
 3. **安装 50 个依赖技能到 `$DSH_HOME/skills/`**
-4. 生成界面代码 `client.js`（需先装技能，技能库快照才非空）
+4. 生成界面代码 `client.js`（需先装技能，技能库快照才非空；包内已带占位版，生成失败也能启动）
 5. 检查 DSH 挂载配置
 6. 生成 `install-report.md`
 
@@ -112,7 +112,7 @@ python install.py --check
 ## 目录结构
 
 ```
-dsh-workbench-0.2.0/
+dsh-workbench-0.2.1/
 ├── install.py                一键安装器
 ├── package.json              DSH 插件声明
 ├── cordis.patch.yml          插件注册补丁
@@ -209,7 +209,7 @@ python tools/gen-topics.py
 | 需要 DSH | 这是 DSH 插件，不能独立运行 |
 | 图片无法自动核验 | 本仓库的模型无法读取图片，配图需人工过目 |
 | 部分技能需付费 API | 红狐相关功能需自行购买 key |
-| 只测过 Windows | macOS / Linux 理论可用，但未实测 |
+| Windows 为主测环境 | 安装器与脚本已去掉 Windows 专属依赖（注册表读取、建链命令均做了平台判断），macOS / Linux 理论可用但未逐一实测 |
 
 ---
 
