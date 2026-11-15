@@ -708,7 +708,13 @@ dsh-workbench/
 │   ├── shot-hotlist.png        README 2.1 每日热榜截图
 │   ├── shot-viral.png          README 2.1 爆文库截图
 │   ├── shot-topics.png         README 2.1 选题库截图
-│   └── wechat-wumo.jpg         README 第八节用的作者微信二维码
+│   ├── shot-create.png         README 2.1 创作台截图
+│   ├── shot-mine.png           README 2.1 我的创作截图
+│   ├── shot-style.png          README 2.1 风格库截图
+│   ├── wechat-group.jpg        README 第八节用的交流群二维码
+│   ├── wechat-wumo.jpg         README 第八节用的作者微信二维码
+│   ├── reward-wx.png          README 第八节用的微信赞赏码
+│   └── reward-alipay.png      README 第八节用的支付宝收款码
 ├── LICENSE                    MIT（只覆盖插件代码，不含 skills/）
 ├── SKILLS-CREDITS.md          第三方技能来源与许可证清单
 ├── skills-manifest.json       技能清单机器可读版（上游地址 / 许可证 / 无上游标记）

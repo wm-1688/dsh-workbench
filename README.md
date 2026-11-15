@@ -534,20 +534,46 @@ client 半按模块 id 加载，改完配置必须**完全退出 DSH 再启动**
 
 用着有问题、想提需求、或者想聊聊怎么用这个工作台做号，都欢迎来群里聊。
 
-### 交流群：墨鱼创作工作台交流群
+### 交流群与作者微信
 
-<img src="./assets/wechat-group.jpg" alt="墨鱼创作工作台交流群二维码" width="260">
+<table>
+<tr>
+<td align="center" width="50%"><img src="./assets/wechat-group.jpg" alt="墨鱼创作工作台交流群二维码" width="230"></td>
+<td align="center" width="50%"><img src="./assets/wechat-wumo.jpg" alt="作者微信二维码" width="230"></td>
+</tr>
+<tr>
+<td align="center"><sub>扫码进群 · 墨鱼创作工作台交流群</sub></td>
+<td align="center"><sub>作者微信：吾墨 · 加好友请备注「工作台」</sub></td>
+</tr>
+</table>
 
-扫码进群。群里主要聊工作台的用法、选题与写作经验，也会第一时间同步版本更新。
+群里主要聊工作台的用法、选题与写作经验，也会第一时间同步版本更新。
 
 > 群二维码由微信生成，**7 天后会失效**。如果扫不进去，直接提
 > [Issue](https://github.com/wm-1688/dsh-workbench/issues) 说一声，我会换新的。
 
-### 作者微信
+技术问题建议还是提 [Issue](https://github.com/wm-1688/dsh-workbench/issues)，
+公开讨论更便于后来的人检索。
 
-**微信：吾墨**（广东广州）
+### 赞助
 
-<img src="./assets/wechat-wumo.jpg" alt="作者微信二维码" width="260">
+工作台是按 MIT 协议开源的，全部功能免费，没有付费版、没有功能阉割、也不打算加。
+如果它确实帮你省了时间，或者你想让后续维护更稳定一些，可以扫码随喜，金额随意，一分也是心意。
 
-加好友请备注「**工作台**」，方便我优先通过。技术问题建议还是提
-[Issue](https://github.com/wm-1688/dsh-workbench/issues)，公开讨论更便于后来的人检索。
+<table>
+<tr>
+<td align="center" width="50%"><b>微信赞赏</b></td>
+<td align="center" width="50%"><b>支付宝赞赏</b></td>
+</tr>
+<tr>
+<td align="center"><img src="./assets/reward-wx.png" width="230" alt="微信赞赏码"></td>
+<td align="center"><img src="./assets/reward-alipay.png" width="230" alt="支付宝赞赏码"></td>
+</tr>
+<tr>
+<td align="center"><sub>☕ 喝点咖啡继续干 ☕</sub></td>
+<td align="center"><sub>🌶️ 来包辣条吧~ 🍪</sub></td>
+</tr>
+</table>
+
+> 赞助是**自愿**的，不影响任何功能的可用性，也不构成任何服务承诺或优先支持。
+> 如果你更希望以非金钱的方式支持，给个 Star、提个 Issue、在群里帮别人答个问题，都同样有用。
