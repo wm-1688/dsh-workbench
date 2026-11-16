@@ -89,7 +89,7 @@ DIRECTIONS = {
     },
 }
 
-# 每个素材出 2 个选题，方向必须不同。这里给组合，保证不撞。
+# 自动批量时每个素材出 2 个选题，方向必须不同。这里给组合，保证不撞。
 DIRECTION_PAIRS = [
     ("共情", "拆解"),
     ("反差", "代价"),
@@ -97,6 +97,46 @@ DIRECTION_PAIRS = [
     ("拆解", "反差"),
     ("共情", "时间"),
 ]
+
+# 方向总数。手工生成时用户可填 1-6，超出这个数就夹住。
+MAX_TOPICS_PER_MATERIAL = len(DIRECTIONS)
+
+
+def pick_directions(n, seed=0):
+    """取 n 个互不重复的方向。
+
+    为什么要跨组取：DIRECTION_PAIRS 是给「出 2 个」设计的配对，
+    用户要 3 个、4 个的时候不能只把第 0 组加长——那样会撞方向。
+    这里按配对表的顺序轮着取，保证前几个方向不同。
+
+    n=2 时结果和原来的 DIRECTION_PAIRS[seed % len] 完全一致，
+    不影响自动批量的既有行为。
+    """
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        n = 2
+    n = max(1, min(MAX_TOPICS_PER_MATERIAL, n))
+
+    if n == 2:
+        # 走老路径，保持自动批量的分组不变
+        return list(DIRECTION_PAIRS[seed % len(DIRECTION_PAIRS)])
+
+    out = []
+    # 先按配对表顺序铺开，配对的顺序本身就是「差异最大」的排序
+    for pair in DIRECTION_PAIRS:
+        for d in pair:
+            if d not in out:
+                out.append(d)
+            if len(out) >= n:
+                return out
+    # 兜底：把没铺到的方向补上（正常不会走到）
+    for d in DIRECTIONS:
+        if d not in out:
+            out.append(d)
+        if len(out) >= n:
+            break
+    return out
 
 
 # ── ① 补全素材 ───────────────────────────────────────────────────────
@@ -170,8 +210,62 @@ def guess_track(title):
     return "文化与生活"
 
 
-def build_analysis_prompt(material, directions):
-    """生成给 Agent 的四步加工指令。"""
+def build_brief_block(brief):
+    """用户在手填弹窗里写的要求，转成指令里的硬约束段。
+
+    brief 可能为空（自动批量就没有）。为空时整段不出，不占篇幅。
+
+    为什么单独成段而不是塞进标题里：这三项和「素材本身」是两回事，
+    混在一起 Agent 容易当成素材信息，写进 facts 里。
+    """
+    if not brief:
+        return ""
+
+    angle = str(brief.get("angle") or "").strip()
+    exclude = str(brief.get("exclude") or "").strip()
+    viewpoint = str(brief.get("viewpoint") or "").strip()
+
+    if not (angle or exclude or viewpoint):
+        return ""
+
+    lines = ["", "### 用户要求（硬约束，优先级高于下面的通用规则）", ""]
+    lines.append("下面是用户在界面里填的，**必须照做**。做不到就说做不到，")
+    lines.append("但不要忽略、不要改成你自己的想法。")
+    lines.append("")
+
+    if viewpoint:
+        lines.append("**个人观点（选题的立场必须和它一致）**")
+        lines.append(f"> {viewpoint}")
+        lines.append("")
+        lines.append("每个选题的 viewpoint 都要从这句话长出来。")
+        lines.append("如果素材事实和这个观点有冲突，如实指出来，不要硬凑。")
+        lines.append("")
+
+    if angle:
+        lines.append("**角度倾向（选题从哪个方向切）**")
+        lines.append(f"> {angle}")
+        lines.append("")
+        lines.append("所有选题的切入角度都要落在这个范围内。")
+        lines.append("下面的「方向」是叙事手法（共情/拆解/反差…），")
+        lines.append("这里的角度是「写什么」，两者都要满足。")
+        lines.append("")
+
+    if exclude:
+        lines.append("**排除项（这些一律不许出现）**")
+        lines.append(f"> {exclude}")
+        lines.append("")
+        lines.append("选题的观点、标题、角度里都不许沾这几个方向。")
+        lines.append("宁可少给一个选题，也不要凑一个踩红线的。")
+        lines.append("")
+
+    return chr(10).join(lines) + chr(10)
+
+
+def build_analysis_prompt(material, directions, brief=None):
+    """生成给 Agent 的四步加工指令。
+
+    brief：用户手填的角度 / 观点 / 排除项。为空时行为与旧版一致。
+    """
     title = material.get("title", "")
     platform = material.get("platform", "")
     # URL 砍掉查询串：热榜链接带一长串追踪参数，喂给 Agent 只是噪音
@@ -192,6 +286,8 @@ def build_analysis_prompt(material, directions):
         f"　推荐结构：{STRUCT_NAME.get(DIRECTION_STRUCTURE.get(d, ''), '自选')}"
         for d in directions
     )
+
+    brief_block = build_brief_block(brief)
 
     need_search = needs_enrich(title)
     search_step = ""
@@ -221,7 +317,7 @@ def build_analysis_prompt(material, directions):
 **必须原样记住上面五项。** 产出 JSON 时在 material 段里逐字带回
 （见文末输出格式），选题落库后靠它回溯到原始热榜条目。
 不要改写 key，不要留空，不要用 agent 代替。
-{search_step}
+{search_step}{brief_block}
 ### ② 拆解素材
 
 把素材拆成三部分，**不要概括，要具体**：
@@ -238,8 +334,8 @@ def build_analysis_prompt(material, directions):
 
 {dir_text}
 
-**硬要求：两个方向必须对同一批事实给出不同解读。**
-如果两个选题读起来是同一个调性、只是换了措辞，就是没做到差异化，重写。
+**硬要求：{len(directions)} 个选题必须对同一批事实给出不同解读。**
+如果几个选题读起来是同一个调性、只是换了措辞，就是没做到差异化，重写。
 
 ### ④ 出选题：先定观点，再配标题
 
@@ -521,9 +617,21 @@ def main():
     ap.add_argument("--platform", default="手工", help="素材来源平台")
     ap.add_argument("--track", default="", help="赛道")
     ap.add_argument("--count", type=int, default=10, help="每日取几条素材")
+    ap.add_argument("--per", type=int, default=2,
+                    help="每条素材出几个选题（1-6）。自动批量固定 2，手工按用户填的数")
+    ap.add_argument("--angle", default="", help="用户填的角度倾向（进指令，硬约束）")
+    ap.add_argument("--exclude", default="", help="用户填的排除项（进指令，硬约束）")
+    ap.add_argument("--viewpoint", default="", help="用户填的个人观点（进指令，硬约束）")
     ap.add_argument("--save", action="store_true", help="把 Agent 结果落库")
     ap.add_argument("--json", default=None, help="Agent 返回的 JSON 文件")
     args = ap.parse_args()
+
+    # 用户在界面填的三项要求。有值就写进指令当硬约束，没值就整段不出。
+    BRIEF = {
+        "angle": (args.angle or "").strip(),
+        "exclude": (args.exclude or "").strip(),
+        "viewpoint": (args.viewpoint or "").strip(),
+    }
 
     conn = sqlite3.connect(DB)
     conn.row_factory = sqlite3.Row
@@ -630,14 +738,18 @@ def main():
         conn.close()
         return 1
 
-    pair = DIRECTION_PAIRS[0]
-    prompt = build_analysis_prompt(material, pair)
+    # 手工入口：方向数量按用户填的 --per（1-6），不是固定 2 个。
+    pair = pick_directions(args.per, seed=0)
+    prompt = build_analysis_prompt(material, pair, brief=BRIEF)
     outdir = os.path.join(WORKSPACE, "_tmp", "topic-prompts")
     os.makedirs(outdir, exist_ok=True)
     p = os.path.join(outdir, "single.md")
     io.open(p, "w", encoding="utf-8").write(prompt)
     print(f"  素材：{material['title']}")
-    print(f"  方向：{pair[0]} / {pair[1]}")
+    print(f"  方向（{len(pair)} 个）：{' / '.join(pair)}")
+    if any(BRIEF.values()):
+        _b = [k for k, v in BRIEF.items() if v]
+        print(f"  用户要求：{', '.join(_b)}")
     print(f"  ✅ 加工指令 → {p}")
     print(f"     交给 Agent 执行，产出的 JSON 用 --save --json <文件> 落库")
     conn.close()

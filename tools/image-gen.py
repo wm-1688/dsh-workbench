@@ -1497,17 +1497,16 @@ def _cfg(key, env_name=""):
 
 
 def _text_channel():
-    """文本模型通道：dsh（默认）或 openai。
+    """文本模型通道。目前只有 openai（OpenAI 兼容服务）。
 
-    兼容旧配置：如果 textModel 里填的不是 dsh/openai，
-    说明是改版前有人直接填了模型名，按 openai 通道处理，别让他的配置失效。
+    2026-11-16 移除了 dsh 通道，但**保留这个函数** ——
+    以后要加别的协议（如 Anthropic messages），在这里加个分支就行。
+    兼容旧值：如果 textModel 里填的是模型名（不是通道值），按 openai 处理。
     """
     v = (_cfg("textModel", "") or "").strip().lower()
-    if v in ("dsh", "openai"):
+    if v in ("openai", "dsh"):
         return v
-    if v:
-        return "openai"
-    return "dsh"
+    return "openai"
 
 
 def _text_model_name():
@@ -1604,128 +1603,119 @@ def _text_cfg_ready():
 TEXT_MODEL = "gemini-2.5-flash"
 
 
-def _dsb_chat(system, user, max_tokens, temperature):
-    """走 DSH 通道：本地路由 /api/workbench/llm-chat → node 半用 ctx.llm.stream() 调 DSH 主对话模型。
+def _extract_json(text):
+    """从模型返回里抠出 JSON。模型常在前后带解释、markdown 代码块或思考过程。
 
-    为什么绕一圈：ctx 只有 node 半拿得到，Python 拿不到。
-    好处是不用额外配 Key，DSH 换模型这里自动跟着换。
-    失败返回 None，让上层回退，不打断流程。
+    2026-11-15 实测：deepseek 会把 reasoning 和正文一起吐出来，
+    直接 json.loads 会报 Extra data / Expecting value。
+    这里按优先级尝试：```
+```json 块 → 第一个 [ 或 { 到最后一个 ] 或 } → 原文
     """
-    port = (os.environ.get("DSH_WORKBENCH_PORT") or "").strip()
-    if not port:
-        for ev in ("DSH_WEB_URL", "DSH_WORKBENCH_UI_URL"):
-            u = (os.environ.get(ev) or "").strip()
-            if u:
-                m = re.search(r":(\d+)", u)
-                if m:
-                    port = m.group(1)
-                    break
-    if not port:
-        port = "62775"   # 兜底，错了就回退中转站
-    url = "http://127.0.0.1:%s/api/workbench/llm-chat" % port
+    import re as _re
+    if not text:
+        return None
+    t = text.strip()
 
-    payload = {"system": system, "user": user, "maxTokens": max_tokens}
-    if temperature is not None:
-        payload["temperature"] = temperature
+    # 1) markdown 代码块
+    m = _re.search(r"```(?:json)?\s*([\s\S]*?)```", t)
+    if m:
+        try:
+            return json.loads(m.group(1).strip())
+        except Exception:
+            pass
 
-    # 本机回环令牌：node 半启动时写到 <工作区>/.llm-token
-    tok = ""
+    # 2) 尝试原文
     try:
-        tf = os.path.join(WORKSPACE, ".llm-token")
-        if os.path.isfile(tf):
-            tok = io.open(tf, encoding="utf-8").read().strip()
+        return json.loads(t)
     except Exception:
         pass
-    if not tok:
-        return None
 
-    try:
-        import urllib.request as _ur
-        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        hdrs = {"Content-Type": "application/json", "x-workbench-llm-token": tok}
-        req = _ur.Request(url, data=body, method="POST", headers=hdrs)
-        with _ur.urlopen(req, timeout=180) as resp:
-            raw = resp.read()
-        d = json.loads(raw.decode("utf-8")) if raw else {}
-        if d.get("ok") and (d.get("text") or "").strip():
-            return {"ok": True, "text": d["text"].strip(),
-                    "model": "%s/%s" % (d.get("provider"), d.get("model")),
-                    "via": "dsh"}
-        return None
-    except Exception:
-        return None
+    # 3) 抠数组：第一个 [ 到最后一个 ]
+    i, j = t.find("["), t.rfind("]")
+    if i >= 0 and j > i:
+        try:
+            return json.loads(t[i:j + 1])
+        except Exception:
+            pass
+
+    # 4) 抠对象
+    i, j = t.find("{"), t.rfind("}")
+    if i >= 0 and j > i:
+        try:
+            return json.loads(t[i:j + 1])
+        except Exception:
+            pass
+
+    return None
 
 
 def text_chat(system, user, workspace=WORKSPACE, max_tokens=800, temperature=None):
-    """一次文本模型调用。三通道降级，见文件上方注释。
+    """一次文本模型调用。**只走 OpenAI 兼容 API**。
 
-    抽成一个函数是因为润色与智能分镜都要它：
-    两处各写一遍，迟早有一处忘了改端点或超时。
+    2026-11-16 移除了 DSH 通道：它返回带 reasoning 的无结构内容，
+    要在 node 侧额外过滤才能用，链路长、故障点多。
+    统一走 API 更简单可靠 —— 任何 OpenAI 兼容服务都能填。
+
+    配置项（生图工作台 → 设置）：
+      textModel        模型 id，如 deepseek-v4.1-flash-sg
+      textModelBaseUrl 接口地址，填域名或完整端点都行
+      textModelKey     API Key（留空则借用生图的 Key）
     """
     channel = _text_channel()
+    if channel != "openai":
+        return {"ok": False, "via": channel,
+                "error": "不支持的文本模型通道：%s（当前只支持 OpenAI 兼容）" % channel}
 
-    # ── ① openai 通道：走设置页配的外部服务 ──
-    if channel == "openai":
-        ready, why = _text_cfg_ready()
-        cfg_model = _text_model_name()
-        key = _text_key()
-        url = _text_base_url()
-        if not ready:
-            # 选了 openai 就按 openai 报错，**不悄悄切到 DSH** ——
-            # 静默切换会让人误以为配置生效了，实际在用别的通道，最难查。
-            return {"ok": False, "via": "openai-compat",
-                    "error": "文本模型通道选了「OpenAI 兼容」，但配置不全：" + why}
-        if ready:
-            payload = {"model": cfg_model,
-                       "messages": [{"role": "system", "content": system},
-                                    {"role": "user", "content": user}],
-                       "max_tokens": max_tokens}
-            if temperature is not None:
-                payload["temperature"] = temperature
-            try:
-                st, raw = http(url, key, json.dumps(payload, ensure_ascii=False), timeout=120)
-                d = json.loads(raw) if raw else {}
-                txt = (((d.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
-                if txt:
-                    return {"ok": True, "text": txt, "model": cfg_model, "via": "openai-compat"}
-            except Exception:
-                pass   # 调不通就继续往下走，别直接失败
+    model = _text_model_name()
+    url = _text_base_url()
+    key = _text_key()
 
-    # ── ② DSH 通道 ──
-    r = _dsb_chat(system, user, max_tokens, temperature)
-    if r:
-        return r
-
-    # ── ③ 回退中转站 ──
-    env = load_env(workspace)
-    key = (env.get("WRITING_MODEL_API_KEY")
-           or env.get("IMAGE_MODEL_API_KEY")
-           or _cfg("imageModelKey", "IMAGE_MODEL_API_KEY")
-           or "")
+    if not model:
+        return {"ok": False, "via": "api",
+                "error": "没填「文本模型」。请在生图工作台「设置」里填写模型 id"}
+    if not url:
+        return {"ok": False, "via": "api",
+                "error": "没填「文本模型接口地址」。请在生图工作台「设置」里填写"}
     if not key:
-        return {"ok": False,
-                "error": "文本模型不可用：三通道都没成（openai 通道未配置 / DSH 通道不通 / "
-                         "没有中转站 Key）。请在生图工作台「设置」里配置文本模型"}
-    host = (_cfg("imageBaseUrl", "") or "").strip() or "https://grsai.dakka.com.cn"
-    m = re.match(r"^(https?://[^/]+)", host)
-    host = m.group(1) if m else host
-    url = host.rstrip("/") + "/v1/chat/completions"
-    payload = {"model": TEXT_MODEL,
+        return {"ok": False, "via": "api",
+                "error": "没有可用的 API Key。请在「设置」里填文本模型 API Key，或配好生图 Key"}
+
+    payload = {"model": model,
                "messages": [{"role": "system", "content": system},
                             {"role": "user", "content": user}],
                "max_tokens": max_tokens}
     if temperature is not None:
         payload["temperature"] = temperature
-    try:
-        st, raw = http(url, key, json.dumps(payload, ensure_ascii=False), timeout=120)
-        d = json.loads(raw) if raw else {}
-        txt = (((d.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
-        if txt:
-            return {"ok": True, "text": txt, "model": TEXT_MODEL, "via": "relay"}
-        return {"ok": False, "error": "中转站返回空：" + str(d)[:200]}
-    except Exception as e:
-        return {"ok": False, "error": "文本模型三通道都失败：" + str(e)}
 
+    try:
+        st, raw = http(url, key, json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                       timeout=180)
+    except Exception as e:
+        return {"ok": False, "via": "api",
+                "error": "请求异常（%s）：%s" % (type(e).__name__, str(e)[:200])}
+
+    body_txt = (raw or b"").decode("utf-8", "replace")
+    if st != 200:
+        return {"ok": False, "via": "api",
+                "error": "HTTP %s：%s" % (st, body_txt[:300])}
+    if not body_txt.strip():
+        return {"ok": False, "via": "api", "error": "接口返回空响应（HTTP 200 但没有 body）"}
+
+    try:
+        d = json.loads(body_txt)
+    except Exception:
+        return {"ok": False, "via": "api",
+                "error": "接口返回的不是 JSON（前 300 字）：" + body_txt[:300]}
+
+    if d.get("error"):
+        msg = d["error"].get("message") if isinstance(d["error"], dict) else d["error"]
+        return {"ok": False, "via": "api", "error": "接口报错：%s" % str(msg)[:200]}
+
+    txt = (((d.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+    if not txt:
+        return {"ok": False, "via": "api",
+                "error": "返回里没有 choices 内容：" + body_txt[:200]}
+    return {"ok": True, "text": txt, "model": model, "via": "api"}
 
 def polish_theme(theme, workspace=WORKSPACE):
     """把主题改写成画面描述。
@@ -1801,19 +1791,12 @@ def smart_split(text, want=0, workspace=WORKSPACE):
     if not r.get("ok"):
         return r
     raw = r["text"].strip()
-    # 模型常把 JSON 包在 ``` 里：先剥外壳，剥不掉再从整段里抠第一个数组
-    raw = re.sub(r"^```(?:json)?\s*", "", raw)
-    raw = re.sub(r"\s*```$", "", raw).strip()
-    data = None
-    try:
-        data = json.loads(raw)
-    except Exception:
-        m = re.search(r"[\{\[].*[\}\]]", raw, re.S)
-        if m:
-            try:
-                data = json.loads(m.group(0))
-            except Exception as e:
-                return {"ok": False, "error": f"JSON 解析失败：{e}", "raw": raw[:300]}
+    # 用 _extract_json 统一处理：它按「代码块 → 原文 → 抠数组 → 抠对象」四级尝试。
+    # 原来这里自己写的正则 `[{[].*[}]]` 是**贪婪匹配**，会从第一个 [ 一直吃到最后一个 ]，
+    # 模型后面若还有重复内容就会整段带上 → 报 Extra data（实测踩过）。
+    data = _extract_json(raw)
+    if data is None:
+        return {"ok": False, "error": "模型返回里找不到合法 JSON", "raw": raw[:400]}
 
     # 形状兼容：新格式是 {cast, panels} 对象，旧格式（以及模型偶发退化）
     # 是纯数组。两种都收，不因为形状变化就整段失败。

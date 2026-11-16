@@ -27,7 +27,14 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLUGIN = os.path.dirname(HERE)
-ROOT = os.path.dirname(PLUGIN)
+
+# 工作区根。不能写死 PLUGIN/..：那只在开发环境成立，装到
+# <profile>/node_modules/dsh-workbench 时会算成 node_modules，
+# publish 的 cwd 与相对路径一起漂到包外面。
+sys.path.insert(0, HERE)
+import ws_path
+
+ROOT = ws_path.resolve_workspace(PLUGIN)
 
 
 def skill_root():

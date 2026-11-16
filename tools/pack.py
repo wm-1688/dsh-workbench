@@ -11,9 +11,10 @@
     手工复制管不住，所以做成一条命令。
 
 包含什么 / 排除什么：
-    包含：lib/ tools/ docs/ writing-dna/ skills/ + 根目录的 md/yml/py/json
+    包含：lib/ tools/ docs/ writing-dna/ skills/ assets/ + 根目录的 md/yml/py/json
     排除：__pycache__、_t.json/_d.json 这类调试残留、drafts/ image-studio/
           workbench/（都是本地数据，几十 MB，不该进包）
+          lib/ 下的本地数据快照（装完跑 build.py 会重新生成）
 
 版本号从 package.json 读，包内目录名与之一致。
 """
@@ -29,9 +30,10 @@ PLUGIN = os.path.dirname(HERE)
 DIST = os.path.join(os.path.dirname(PLUGIN), "dist")
 
 # 进包的目录
-# 注意：不含 skills/ —— 技能不随包发布，由 fetch-skills.py 在安装后
-# 从 GitHub 下载到 $DSH_HOME/skills（仓库里没有技能源码，这是设计如此）。
-INCLUDE_DIRS = ["lib", "tools", "docs", "writing-dna"]
+# skills/ 随包分发（2026-11 起改为整包）：装的时候 install.py 直接复制到
+# $DSH_HOME/skills，不必联网。fetch-skills.py 只作为包内缺技能时的兜底。
+# assets/ 是 README 里引用的截图与二维码，缺了 README 就是一片破图。
+INCLUDE_DIRS = ["lib", "tools", "docs", "writing-dna", "skills", "assets"]
 # 根目录下进包的文件类型
 INCLUDE_EXTS = {".md", ".json", ".yml", ".yaml", ".py", ".txt"}
 # 无论在哪都排除
@@ -45,7 +47,10 @@ EXCLUDE_SNAPSHOTS = {
     "db.snapshot.json", "materials.snapshot.json", "xhs-hot.snapshot.json",
     "gzh-hot.snapshot.json", "sports.snapshot.json", "topics.generated.json",
     "vd744-analysis.json", "vd744-index.json", "img-catalog.json",
+    "gzh-deep-stats.json", "gzh-rank-summary.json",
 }
+# 根目录里没有扩展名但**必须**进包的文件（LICENSE 关乎第三方技能的授权声明）
+EXTRA_ROOT_FILES = {"LICENSE"}
 
 
 def version():
@@ -86,7 +91,7 @@ def build_manifest():
             continue
         if f in EXCLUDE_ROOT or f.startswith("."):
             continue
-        if os.path.splitext(f)[1].lower() not in INCLUDE_EXTS:
+        if f not in EXTRA_ROOT_FILES and os.path.splitext(f)[1].lower() not in INCLUDE_EXTS:
             continue
         items.append((ap, f))
     return items

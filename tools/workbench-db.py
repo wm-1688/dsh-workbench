@@ -1818,9 +1818,10 @@ def cmd_api(args):
 
             # 个别 channel 类型字段的下拉选项和生图那两个不一样，这里按 key 指定。
             # 文本模型通道要「DSH / OpenAI 兼容」，不能套生图的「GRS AI / OpenAI 兼容」。
+            # 2026-11-16 移除 dsh 通道：它返回带 reasoning 的无结构内容，
+            # 要在 node 侧额外过滤才能用，链路长、故障点多。统一走 OpenAI 兼容 API。
             CHANNEL_OPTIONS = {
                 "textModel": [
-                    {"value": "dsh", "label": "DSH（主对话模型，默认）"},
                     {"value": "openai", "label": "OpenAI 兼容（第三方服务）"},
                 ],
             }
@@ -2292,10 +2293,14 @@ def _sync_env_file(conn, patch):
 
     # WORKSPACE 是模块级常量（脚本顶部已算好），直接用
     path = _os.path.join(WORKSPACE, "aws.env")
-    if not _os.path.isfile(path):
-        return 0
-
-    lines = io.open(path, encoding="utf-8").read().split("\n")
+    # 文件不存在也要写：新用户机器上 aws.env 本来就没有（敏感文件，不入库）。
+    # 早期这里直接 return 0，结果是「界面配好了密钥、settings 表也有值，
+    # 但 publish.py / image-gen.py 读的 aws.env 从头到尾没被创建」——
+    # 表现为发布时永远报「缺 AppID / AppSecret」，而界面上明明填了。
+    if _os.path.isfile(path):
+        lines = io.open(path, encoding="utf-8").read().split("\n")
+    else:
+        lines = []
     seen, out = set(), []
     for ln in lines:
         m = _re.match(r"^(\s*)([A-Z0-9_]+)\s*=", ln)

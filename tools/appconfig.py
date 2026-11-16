@@ -25,6 +25,7 @@
 import io
 import os
 import sqlite3
+import sys
 
 # winreg 只有 Windows 有。macOS / Linux 上直接 import 会抛 ModuleNotFoundError，
 # 整个脚本起不来；降级成 None 后，注册表那一级回退自动跳过，其余来源照常。
@@ -35,7 +36,21 @@ except ImportError:  # pragma: no cover - 非 Windows
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLUGIN = os.path.dirname(HERE)
-WORKSPACE = os.path.dirname(PLUGIN)
+
+# 库位置必须交给 ws_path 解析，**不能**写死 WORKSPACE = PLUGIN/..。
+# 写死只在开发环境成立（插件放在 <workspace>/dsh-workbench/ 下）。
+# 用户把插件装到 <profile>/node_modules/dsh-workbench 时，PLUGIN/.. 会算成
+# <profile>/node_modules，于是出现致命的错位：
+#   init-settings.py 走 ws_path，把设置写进 <plugin>/workbench/workbench.db
+#   业务脚本走这里，去 <node_modules>/workbench/workbench.db 读
+# 结果就是表里明明有值也读不到 —— 界面上配好的 key 全部失效，
+# 抓数、生图、发布一个都跑不起来，而且不报「配置缺失」，只报「数据库不存在」
+# 或者干脆静默回落到旧来源，极难排查。
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+import ws_path  # noqa: E402  （同目录，必须在 HERE 入 sys.path 之后导入）
+
+WORKSPACE = ws_path.resolve_workspace(PLUGIN)
 DB = os.path.join(WORKSPACE, "workbench", "workbench.db")
 ENV_FILE = os.path.join(WORKSPACE, "aws.env")
 

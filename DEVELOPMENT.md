@@ -1,6 +1,6 @@
 # dsh-workbench · 开发文档
 
-**当前版本：`0.2.1`**
+**当前版本：`0.2.3`**
 
 本文件面向**开发者与维护者**：表结构、路由、文件结构、命令速查、设计取舍与踩坑记录。
 
@@ -444,7 +444,7 @@ python tools/pack.py                               # 打包 → dist/dsh-workben
 
 ---
 
-## 四、API 路由（22 条，全部挂在 `/api` 下）
+## 四、API 路由（21 条，全部挂在 `/api/workbench/` 下）
 
 | 路由 | 方法 | 作用 |
 |---|---|---|
@@ -454,7 +454,6 @@ python tools/pack.py                               # 打包 → dist/dsh-workben
 | `/api/workbench/styles` | GET / POST | **文字风格库**：GET 列表（`?kind=personal\|system\|sub\|all`）或单条（`?code=MS-001`）；POST 新建 / 更新 / `action:'delete'` 归档 / `action:'vote'` / `action:'use'` |
 | `/api/workbench/publishes` | GET | 发布记录 |
 | `/api/workbench/settings` | GET / POST | **设置**：GET 读全部配置项（密钥只回打码值）；POST 批量写 |
-| `/api/workbench/llm-chat` | POST | **文本模型（DSH 通道）**：node 半用 `ctx.llm.stream` 调 DSH 主对话模型，给 Python 的润色 / 分镜用；仅 loopback + token 可调 |
 | `/api/workbench/draft-content` | GET | **读全文**：优先 `article.html` → `article.md` → `draft.md`；markdown 会转 HTML |
 | `/api/workbench/asset` | GET | **读配图**：按路径返回二进制（带路径穿越防护） |
 | `/api/workbench/materials` | GET | **每日热榜归档**：实时返回 `materials.snapshot.json`（不再只靠构建时烘焙） |
@@ -645,7 +644,7 @@ dsh-workbench/
 ├── package.json              dsh.bundle.patch + dsh.client.platform:web；peer 全 optional
 ├── cordis.patch.yml          insert 一条 {id, name}
 ├── lib/
-│   ├── index.js              node 半：22 条带鉴权的 fetch 路由 + mdToHtml 转换器
+│   ├── index.js              node 半：21 条带鉴权的 fetch 路由 + mdToHtml 转换器
 │   ├── client.template.js    client 半源码（**改这个**）
 │   ├── gzh-rank-summary.json 各赛道实力榜的汇总（gzh-compare.py 的输入）
 │   ├── gzh-deep-stats.json   各分类账号分布统计（gzh-deep.py 的输出）
@@ -766,7 +765,46 @@ client-modules: dsh-workbench declares dsh.client but exports no "./client" bund
 3. 都不满足 —— 安装环境，用插件目录自己（数据落在插件目录内）
 
 `lib/index.js` 里所有路径（`drafts`、`workbench`、`image-studio`、`aws.env`、
-`.llm-token`、`materials/inbox`）都由 `WORKSPACE` 派生，没有第二处硬编码。
+`materials/inbox`）都由 `WORKSPACE` 派生，没有第二处硬编码。
+
+> `.llm-token` 已随 DSH 文本通道一起移除（2026-11-16），现在没有这个文件了。
+
+#### 取库路径的脚本一律走 `ws_path`
+
+`tools/` 下凡是需要 `workbench/workbench.db` 或 `aws.env` 的脚本，都必须用
+`ws_path.resolve_workspace()` / `ensure_workspace()`，**不允许**自己写
+`os.path.dirname(PLUGIN)`：
+
+| 脚本 | 用法 |
+|---|---|
+| `workbench-db.py` / `image-db.py` / `image-gen.py` | `_ws.ensure_workspace(PLUGIN)` |
+| `init-settings.py` / `check-facts.py` / `check-thesis.py` / `check-topic-align.py` / `topic-pipeline.py` | `ws_path.resolve_workspace()` / `ensure_workspace()` |
+| `appconfig.py` | `ws_path.resolve_workspace(PLUGIN)` —— 配置读取层，**最容易漏** |
+| `finalize.py` | `ROOT = ws_path.resolve_workspace(PLUGIN)`（publish 的 cwd 基准） |
+
+**为什么 `appconfig.py` 尤其危险**：它是所有业务脚本取配置的唯一入口。
+一旦它写死 `PLUGIN/..`，就会出现「写读错位」——
+
+```
+init-settings.py（走 ws_path） → 写 <plugin>/workbench/workbench.db
+业务脚本（走 appconfig）      → 读 <node_modules>/workbench/workbench.db  ← 不存在
+```
+
+表里明明有值却读不到，表现**不是**「配置缺失」，而是静默回落到环境变量/注册表、
+或者干脆读空。用户在界面上配好的 API Key 全部失效，抓数、生图、发布一个都跑不起来，
+而作者本地因为 `<workspace>/workbench/` 存在，`PLUGIN/..` 恰好算对，永远复现不了。
+
+排查口诀：**同一个库，写的人和读的人必须算出同一个路径**。
+验证方法是在一份 `<profile>/node_modules/dsh-workbench` 布局里分别调
+`ws_path.resolve_workspace()` 和 `appconfig.WORKSPACE`，两者必须相等。
+
+#### `aws.env` 文件不存在时要能创建
+
+`_sync_env_file()`（`workbench-db.py`）负责把界面保存的密钥回写到 `aws.env`，
+因为 `publish.py` 等技能脚本读的是**文件**而不是数据库。
+新用户机器上 `aws.env` 本来就不存在（`.gitignore` 已排除该文件），
+所以文件缺失时必须新建，不能直接 `return 0` —— 否则界面配好了密钥、
+`settings` 表也有值，`aws.env` 却永远不会被创建，发布时一直报缺 AppID / AppSecret。
 
 ---
 
@@ -1109,23 +1147,36 @@ GET  {host}/v1/api/result?id=<task_id>    → running/… → succeeded → resu
 
 | 键 | 用途 |
 |---|---|
-| `IMAGE_MODEL_API_KEY` | 生图必需；默认文本模型也复用它（实测同一个 key 可用） |
-| `WRITING_MODEL_API_KEY` | 可选，单独给文本模型计费时用；缺省回落上面那个 |
+| `IMAGE_MODEL_API_KEY` | 生图必需；文本模型没配自己的 Key 时复用它 |
 
-文本模型另有 `DSH_WORKBENCH_TEXT_MODEL`（默认 `gemini-2.5-flash`）和
-`DSH_WORKBENCH_TEXT_ENDPOINT` 两个环境变量可覆盖。`aws.env` 已在 `.gitignore` 里。
+`aws.env` 已在 `.gitignore` 里。文本模型的接口地址 / 模型名 / Key 走设置表的
+`textModelBaseUrl` / `textModelModel` / `textModelKey` 三项（`tools/appconfig.py` 统一取值），
+不再有环境变量覆盖。
 
-### 文本模型为什么不用 DSH 的那套
+### 文本模型为什么只走 OpenAI 兼容接口（2026-11-16 移除 DSH 通道）
 
-**`text_chat()` 走的是出图聚合站的 `/v1/chat/completions`，不是 DSH 主对话的模型配置。**
-这是刻意的，原因有三：
+早先 `text_chat()` 有三条通道：外部中转站 → DSH 主对话模型（默认）→ 聚合站兜底。
+**2026-11-16 把 DSH 那条删掉了**，连带删掉 node 半的 `/api/workbench/llm-chat`
+路由和 `.llm-token` 回环令牌。原因：
 
-1. **工具是纯 Python 标准库**，跑在 `python tools/image-gen.py` 子进程里，
-   拿不到 DSH 主进程的模型客户端与会话上下文
-2. **计费口径统一**：出图与组词走同一家、同一个 key，账单在一处看
-3. **实测可用**：同一个 `IMAGE_MODEL_API_KEY` 在该站 `/v1/chat/completions` 上
-   只有 `gemini-2.5-flash` 能通（`gpt-4o` / `gpt-4.1` / `gpt-5` / `deepseek-chat` /
-   `claude` / `qwen` / `glm` 全部 `model not found`）—— 换模型前必须先在站上试通
+1. **它返回的是带 reasoning 的混合内容**，要在 node 侧逐层剥离才能用，
+   链路里多出一层「猜 chunk 形状」的脆弱代码
+2. **链路长、故障点多**：Python 子进程 → HTTP 回环 → DSH 路由 → token 校验 → ctx.llm，
+   任何一环变动都会静默失败，而且失败信息在 Python 侧看不到
+3. **配置面收敛**：统一走 API 之后，任何 OpenAI 兼容服务都能填，不再有两套口径
+
+现在只有一条路：`text_chat()` 打 `_text_base_url()` 给的 `/v1/chat/completions`。
+配置优先级 ——
+
+| 配置项 | 取值顺序 |
+|---|---|
+| 接口地址 | `textModelBaseUrl` → 留空则用 `imageBaseUrl` 的域名 + `/v1/chat/completions` |
+| 模型名 | `textModelModel` → `textModel`（旧字段，非通道值时）→ 兜底 `gemini-2.5-flash` |
+| Key | `textModelKey` → `imageModelKey` |
+
+**Key 借用有前提**：`_text_cfg_ready()` 会校验「借用生图 Key 时接口地址必须同源」，
+否则等于拿 A 家的钥匙开 B 家的门。`_text_channel()` 只认 `openai`，
+兼容旧值：`textModel` 里填的是模型名也按 `openai` 处理。
 
 `text_chat()` 只有两个调用点，都在出图前：
 
