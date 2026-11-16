@@ -1127,6 +1127,11 @@ def load_model_cfg(workspace):
     GRS AI 的 /v1/api/generate 异步接口，所以这个必须能配。
     """
     model, size, quality, base = DEFAULT_MODEL, "1024x1024", "auto", ""
+    # channel 必须先给初值：下面两处赋值都在 if / try 里，
+    # 工作区没有 .aws-article/config.yaml 时（新装机就是这种）会一路跳过，
+    # 到后面用 channel 时就 UnboundLocalError，生图整条链直接崩。
+    # 2026-11-16 实测踩到：新装用户第一次点生图就失败。
+    channel = ""
     cfg_path = os.path.join(workspace, ".aws-article", "config.yaml")
     if os.path.isfile(cfg_path):
         try:
@@ -1356,7 +1361,7 @@ def _openai_hint(st, txt, cfg):
         return (f"404 找不到接口。当前地址是 {cfg['openaiUrl']}\n"
                 f"    这个中转站可能不支持 OpenAI 格式，检查地址是否应为 /v1/images/generations")
     if st == 401 or "invalid api key" in low or "unauthorized" in low:
-        return "401 密钥无效。检查生图 API Key 是否正确"
+        return "401 密钥无效。检查「生图 · API Key」是否正确"
     if st == 429:
         return "429 请求过于频繁或余额不足"
     if "model" in low and ("not found" in low or "not exist" in low or "unsupported" in low):
@@ -1581,11 +1586,11 @@ def _text_cfg_ready():
     key = _text_key()
 
     if not has_model:
-        return False, "没填「文本模型名」"
+        return False, "没填「文本模型 · 模型名称」"
     if not url:
-        return False, "没填「文本模型接口地址」"
+        return False, "没填「文本模型 · API 地址」"
     if not key:
-        return False, "没有任何可用的 Key（文本模型 API Key 和生图 API Key 都空）"
+        return False, "没有任何可用的 Key（「文本模型 · API Key」和「生图 · API Key」都空）"
     if _text_key_is_explicit():
         return True, ""
     # Key 是借生图的 —— 地址必须同源

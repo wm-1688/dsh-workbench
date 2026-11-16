@@ -38,21 +38,21 @@ DB = os.path.join(WORKSPACE, "workbench", "workbench.db")
 # 默认配置项。key 用小驼峰，界面直接按 key 读写。
 DEFAULTS = [
     # ── 生图工作台（group=image）──
-    ("imageModelKey", "secret", "生图 API Key",
+    ("imageModelKey", "secret", "API Key",
      "生图工作台出图用。默认接 GRS AI 聚合站", "image"),
-    ("imageChannel", "channel", "生图通道",
+    ("imageChannel", "channel", "生图模型渠道",
      "GRS AI 官方，或 OpenAI 兼容的第三方中转", "image"),
-    ("imageBaseUrl", "text", "生图中转站地址",
+    ("imageBaseUrl", "text", "API 地址",
      "必须含完整端点路径，如 https://grsai.dakka.com.cn/v1/images/generations", "image"),
-    ("imageModel", "text", "默认生图模型",
+    ("imageModel", "text", "图片模型",
      "如 gpt-image-2.6；换了模型名这里也要跟着改", "image"),
-    ("textModel", "channel", "文本模型通道",
+    ("textModel", "channel", "模型渠道",
      "默认走 DSH 主对话的模型；选 OpenAI 兼容则用下面三项配外部服务", "image"),
-    ("textModelBaseUrl", "text", "文本模型接口地址",
+    ("textModelBaseUrl", "text", "API 地址",
      "只在「OpenAI 兼容」通道下生效。填完整端点（含 /v1/chat/completions），或只填域名", "image"),
-    ("textModelModel", "text", "文本模型名",
+    ("textModelModel", "text", "模型名称",
      "只在「OpenAI 兼容」通道下生效。填模型 id，如 gpt-4o-mini / gemini-2.5-flash", "image"),
-    ("textModelKey", "secret", "文本模型 API Key",
+    ("textModelKey", "secret", "API Key",
      "只在「OpenAI 兼容」通道下生效。任意 OpenAI 兼容服务都可以", "image"),
 
     # ── 公众号工作台（group=gzh）──
@@ -72,8 +72,9 @@ DEFAULTS = [
     ("wechat2AppSecret", "secret", "账号 2 AppSecret", "不用可留空", "gzh"),
 
     # ── 行为开关（group=gzh）──
+    # 2026-11-16：默认改成关。用户要的是「一次做完」，骨架自己定，不要中途停。
     ("confirmSkeleton", "bool", "骨架要人工确认",
-     "开=每篇写完骨架停下等你确认；关=直接写正文", "gzh"),
+     "勾上=写好骨架停下等你确认；不勾（默认）=骨架自己定，一路写到图位插好为止", "gzh"),
     ("materialKeepDays", "number", "热榜保留天数",
      "3 / 7 / 14 天，默认 7", "gzh"),
 ]
