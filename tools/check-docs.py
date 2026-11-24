@@ -163,10 +163,37 @@ for name in ("DEVELOPMENT.md", "README.md"):
             break
     if tree:
         break
-for f in re.findall(r"^[│├└─\s]*([\w.\-]+\.(?:json|yml|js|py|md))", tree, re.M):
+# 只从**树线行**里取文件名：必须以 │ ├ └ 开头（允许前导空格）。
+# 不能用「行首任意字符」去匹配 —— 正文里的 `_sync_env_file()`（`workbench-db.py`
+# 这种句子会被当成文件名，误报到文档漂移里。
+# 文件名可能含中文与空格（如「大小姐方法论·全9讲整理.md」），
+# 所以树线之后的字符类放宽到「非树线、非路径分隔符」。
+#
+# 取**每行第一个**带目标扩展名的词（树里文件名在最前面，后面是说明文字）。
+# 不能要求行尾锚定 —— 绝大多数行后面都跟着一句用途说明。
+#
+# 实现：逐行处理 —— 剥掉树线前缀，取第一个空白分隔的 token 当文件名。
+# 正则跨行回溯会把说明文字里的 `gzh-fetch.py` / `package.json` 也抓进来，
+# 那是错的；按行切 token 不会。
+# 图标等资源也要能被反向检查认到（media/ 下是 png/svg）
+TREE_EXTS = (".json", ".yml", ".yaml", ".js", ".py", ".md", ".png", ".svg", ".jpg")
+_tree_names = []
+for _ln in tree.splitlines():
+    _s = _ln.strip()
+    if not _s or _s[0] not in "│├└":
+        continue
+    # 去掉开头的树线字符与空格
+    _s = re.sub(r"^[│├└─\s]+", "", _s)
+    if not _s:
+        continue
+    _tok = _s.split()[0]
+    if _tok.lower().endswith(TREE_EXTS):
+        _tree_names.append(_tok)
+for f in _tree_names:
     p = os.path.join(PLUGIN, f)
     found = os.path.exists(p) or any(
-        os.path.exists(os.path.join(PLUGIN, d, f)) for d in ("lib", "tools", ""))
+        os.path.exists(os.path.join(PLUGIN, d, f))
+        for d in ("lib", "tools", "locale", "docs", "media", "assets", ""))
     # 可选产物（跑一次才生成）缺失不算错——开源包不含本地数据，
     # 但文档该写它们的存在，否则使用者不知道会多出什么。
     # 集合里存的是 `lib/xxx.json` 全路径，这里比裸文件名，两种都认。
@@ -178,9 +205,9 @@ for f in re.findall(r"^[│├└─\s]*([\w.\-]+\.(?:json|yml|js|py|md))", tree
 
 # ── 7. 反向：实际存在的文件有没有写进文档 ──
 # （2026-10-06 补：新增了两个工具却忘了写进文档，此前只查一个方向，查不出来）
-listed = set(re.findall(r"([\w.\-]+\.(?:json|yml|js|py|md))", tree))
+listed = set(_tree_names)
 SKIP = {"client.js", "本地数据说明.md"}          # 生成物，文档在同段说明了，不单列
-for sub in ("lib", "tools"):
+for sub in ("lib", "tools", "locale", "docs", "media", "assets"):
     dp = os.path.join(PLUGIN, sub)
     if not os.path.isdir(dp):
         continue

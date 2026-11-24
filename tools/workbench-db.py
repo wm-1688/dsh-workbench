@@ -1160,6 +1160,11 @@ def ensure_schema(conn):
             ("structure_type", "TEXT"), ("source_url", "TEXT"),
             ("source_platform", "TEXT")]:
         _add_column_if_missing(conn, "topics", col, decl)
+    # 重跑链路（2026-11-18）：同一条素材分析完之后允许再出一批选题，
+    # 新记录用 rerun_of 指回上一条，旧选题不动。
+    # 源码里 enqueue-job 已经按这一列 INSERT，但**从没在这建过列**，
+    # 直接跑会报 "table topic_jobs has no column named rerun_of"。
+    _add_column_if_missing(conn, "topic_jobs", "rerun_of", "INTEGER")
     _migrate_source_key_with_date(conn)
     _migrate_track_to_genre(conn)
     # 2026-11-13：设置项归属工作台，生图台只看自己的那几项
@@ -1581,43 +1586,51 @@ def cmd_api(args):
             else:
                 key = req.get("sourceKey")
                 preset = req.get("preset") or {}
-                try:
+                preset_json = json.dumps(preset, ensure_ascii=False) if preset else None
+                ts = now()
+
+                # 同 key 的既有记录，按状态分成两类
+                #
+                # 为什么不用 IntegrityError 兜（2026-11-18 改）：
+                #   原来靠唯一约束抛异常来判断「已存在」，然后只允许 pending 覆盖、
+                #   已分析的一律拒绝。结果是「重跑」这个需求被彻底堵死 ——
+                #   用户想对同一条素材再出一批选题，界面报「已经分析过了」，
+                #   而那时旧选题可能已经删了。现在改成先查状态再决定。
+                rows = conn.execute(
+                    "SELECT id, status FROM topic_jobs WHERE source_key=? ORDER BY id",
+                    (key,)).fetchall() if key else []
+                pend = [r for r in rows if r["status"] == "pending"]
+                done = [r for r in rows if r["status"] in ("done", "failed")]
+
+                if pend:
+                    # ① 队列里还排着同一素材：更新预设，不重复排队
                     conn.execute(
+                        """UPDATE topic_jobs
+                              SET title=?, preset_json=?, track=?, note=?, updated_at=?
+                            WHERE id=?""",
+                        (title, preset_json, req.get("track") or "",
+                         req.get("note") or "", ts, pend[0]["id"]))
+                    conn.commit()
+                    out = {"ok": True, "id": pend[0]["id"], "updated": True,
+                           "note": "这条已在队列里，预设已更新"}
+                else:
+                    # ② 没排过队，或之前已经分析完 → 新建一条
+                    #    已分析过的允许重跑，旧记录和旧选题一律不动。
+                    rerun_of = done[-1]["id"] if done else None
+                    cur = conn.execute(
                         """INSERT INTO topic_jobs
                              (source_key, title, platform, hot, url, material_date, track,
-                              preset_json, status, note, created_at)
-                           VALUES (?,?,?,?,?,?,?,?, 'pending', ?, ?)""",
+                              preset_json, status, note, created_at, rerun_of)
+                           VALUES (?,?,?,?,?,?,?,?, 'pending', ?, ?, ?)""",
                         (key, title, req.get("platform") or "", req.get("hot") or "",
                          req.get("url") or "", req.get("materialDate") or "",
-                         req.get("track") or "",
-                         json.dumps(preset, ensure_ascii=False) if preset else None,
-                         req.get("note") or "", now()))
+                         req.get("track") or "", preset_json,
+                         req.get("note") or "", ts, rerun_of))
                     conn.commit()
-                    out = {"ok": True, "id": conn.execute(
-                        "SELECT last_insert_rowid() AS i").fetchone()["i"],
-                        "queued": True}
-                except sqlite3.IntegrityError:
-                    # 已存在：如果还没分析（pending），就用新的预设覆盖——
-                    # 否则用户重新点一次改参数会被静默丢弃。
-                    exist = conn.execute(
-                        "SELECT id, status FROM topic_jobs WHERE source_key=?", (key,)).fetchone()
-                    if exist is not None and exist["status"] == "pending":
-                        conn.execute(
-                            """UPDATE topic_jobs
-                                  SET title=?, preset_json=?, track=?, note=?, updated_at=?
-                                WHERE id=?""",
-                            (title,
-                             json.dumps(preset, ensure_ascii=False) if preset else None,
-                             req.get("track") or "", req.get("note") or "",
-                             now(), exist["id"]))
-                        conn.commit()
-                        out = {"ok": True, "id": exist["id"], "updated": True,
-                               "note": "这条已在队列里，预设已更新"}
-                    else:
-                        out = {"ok": True, "duplicate": True,
-                               "id": exist["id"] if exist else None,
-                               "status": exist["status"] if exist else None,
-                               "note": "这条已经分析过了，不再重复入队"}
+                    out = {"ok": True, "id": cur.lastrowid, "queued": True}
+                    if rerun_of:
+                        out["rerunOf"] = rerun_of
+                        out["note"] = "这条之前分析过，本次是重新生成（旧选题保留）"
         elif op == "list-jobs":
             status = req.get("status")
             sql = "SELECT * FROM topic_jobs"
@@ -1837,6 +1850,15 @@ def cmd_api(args):
             items = []
             for r in rows:
                 v = r["value"] or ""
+                # 通道值归位：老库里 textModel 可能存着已移除的 'dsh'。
+                # 不归位的话，前端 <select value="dsh"> 找不到匹配项，
+                # 浏览器会「显示第一项、实际值不变」，用户看着像选了 openai、
+                # 其实还是 dsh，于是三项配置被 visibleIf 藏掉、下拉又切不动。
+                # 这里直接按第一项（当前只有 openai）归一，界面与真实值保持一致。
+                if r["key"] == "textModel":
+                    opts = CHANNEL_OPTIONS.get("textModel") or []
+                    if opts and v not in [o["value"] for o in opts]:
+                        v = opts[0]["value"]
                 if r["kind"] == "secret":
                     shown = (v[:6] + "…" + v[-4:]) if len(v) > 12 else ("已配置" if v else "")
                     items.append({"key": r["key"], "kind": r["kind"], "label": r["label"],

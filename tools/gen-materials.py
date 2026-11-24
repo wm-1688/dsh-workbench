@@ -31,6 +31,29 @@ OUT = os.path.join(PLUGIN, "lib", "materials.snapshot.json")
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
 
+
+def _load_track_fn():
+    """从 topic-pipeline.py 借 guess_tracks，**模块级加载一次**。
+
+    为什么不在 normalize 里每次现加载：188 条素材每条都 exec_module 一次
+    （约 7900 行），实测慢到不可接受。加载一次复用，成本可以忽略。
+
+    借而不是另写一份：赛道词表只在 topic-pipeline 维护，
+    这里再抄一份必然出现「采集说 A、选题说 B」的漂移。
+    """
+    try:
+        import importlib.util as _ilu
+        p = os.path.join(HERE, "topic-pipeline.py")
+        sp = _ilu.spec_from_file_location("_tp_for_tracks", p)
+        mod = _ilu.module_from_spec(sp)
+        sp.loader.exec_module(mod)
+        return getattr(mod, "guess_tracks", None)
+    except Exception:
+        return None
+
+
+_GUESS_TRACKS = _load_track_fn()
+
 # 原文链接拿不到就留空（不用搜索链接冒充原文）——表格里会显示「—」
 
 DIRECT = [
@@ -127,6 +150,25 @@ def normalize(platform, items, title_keys, hot_keys, url_keys, id_rule, date):
             ident = pick(item, [id_rule[0]])
             if ident not in (None, ""):
                 url, kind = id_rule[1].format(ident), "原文"
+        # 可选赛道（2026-11-19 加）：采集时就给每条素材打上候选赛道标签。
+        #
+        # 为什么在采集阶段就算，而不是等选题时再判：
+        # 用户在热榜页挑素材，第一眼要看到的是「这条能写哪几类」。
+        # 等到选题阶段才算，他得先点进去、跑一遍 Agent 才知道，太晚。
+        #
+        # 用 guess_tracks（多候选打分），不是 guess_track（单赛道）——
+        # 实测单赛道判断有 81% 落到兜底「文化与生活」，等于没判。
+        # 多候选给出前 3 个 + 命中词，用户一眼能看出靠谱不靠谱。
+        #
+        # 判不出来就留空列表，**不硬塞兜底值** —— 空着至少诚实，
+        # 塞个「文化与生活」会让人以为真判出来了。
+        tracks = []
+        if _GUESS_TRACKS:
+            try:
+                tracks = _GUESS_TRACKS(title, top=3)
+            except Exception:
+                tracks = []
+
         rows.append({
             "key": f"{platform}@{date}#{i}",
             "platform": platform,
@@ -136,6 +178,7 @@ def normalize(platform, items, title_keys, hot_keys, url_keys, id_rule, date):
             "url": url,
             "date": date,
             "urlKind": kind,
+            "tracks": tracks,
         })
     return rows
 

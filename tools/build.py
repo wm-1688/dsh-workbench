@@ -23,6 +23,7 @@
 import glob
 import io
 import os
+import shutil
 import subprocess
 import sys
 from datetime import datetime
@@ -199,6 +200,29 @@ def main():
         print("   · 后果：运行时 ReferenceError，node 半边挂 → 界面白屏")
         return 1
 
+    # ③ 生成物语法校验（2026-11-17 加）
+    #
+    # 为什么要加：当天改绘图工作台时，client.template.js 里多写了一个 ')'，
+    # 上面两道闸门全过（路由没重复、常量都有定义），build 也打印「完成，重启后生效」，
+    # 但重启后**整个工作台消失** —— 客户端脚本解析失败，组件树一行都没渲染。
+    # 手工括号计数查不出，node --check 一秒就指到行。
+    # 语法错误是「零容忍」类：不是某个功能坏，是整个面板没了，必须挡在构建期。
+    print("\n=== check_syntax（node --check）===")
+    node = shutil.which("node")
+    if not node:
+        print("  ⚠️ 没找到 node，跳过语法校验（生成物未经解析验证）")
+    else:
+        for f in ("client.js", "index.js"):
+            fp = os.path.join(HERE, "..", "lib", f)
+            r = subprocess.run([node, "--check", fp], capture_output=True, text=True)
+            if r.returncode != 0:
+                print(f"\n❌ lib/{f} 有语法错误，构建中止。")
+                print((r.stderr or "").strip()[:1600])
+                print("   · 后果：客户端解析失败 → 整个工作台白屏/消失")
+                print("   · 修法：按上面报的行号找回 client.template.js 里对应的括号")
+                return 1
+            print(f"  ✅ lib/{f} 语法通过")
+
     rc = run("check-docs.py")
     if rc != 0 and "--skip-doc-check" not in sys.argv:
         print("\n❌ 文档与代码不一致，构建中止（界面数据其实已刷新，但请先修文档）。")
@@ -226,12 +250,10 @@ def main():
     # 而当时的三个检查器（符号/质感/结构）全是形式检查，一个都不查事实出处，
     # 于是编造的稿子一路绿灯。这道闸门补的就是这个洞。
     print("\n=== check_facts ===")
-    _facts_targets = sorted(glob.glob(os.path.join(workspace_drafts(), "*", "draft.md")))
-    if _facts_targets:
-        rc = run("check-facts.py", *_facts_targets)
-    else:
-        print("  （没有草稿，跳过）")
-        rc = 0
+    _fact_dirs = sorted(glob.glob(os.path.join(workspace_drafts(), "*", "draft.md")))
+    # 空仓库（发行包不带草稿）必须跳过：check-facts.py 要求至少一个参数，
+    # 零参数会以 argparse 的方式退出 2，被当成「事实核查不过」而中止构建。
+    rc = run("check-facts.py", *_fact_dirs) if _fact_dirs else 0
     if rc != 0 and "--skip-facts-check" not in sys.argv:
         print("\n❌ 有草稿的具体断言找不到素材出处，构建中止。")
         print("   · 处理：删掉、改成「报道未提及」、或回素材补")
@@ -243,12 +265,8 @@ def main():
     # （开头废话 / 结尾总结全文 / 空转过渡句 / 小节字数失衡）。
     # 语义判断（悬念够不够、每段是否只承担一个功能）交给骨架第⑥步的 Agent 自检。
     print("\n=== check_structure ===")
-    _struct_targets = sorted(glob.glob(os.path.join(workspace_drafts(), "*", "draft.md")))
-    if _struct_targets:
-        rc = run("check-structure.py", *_struct_targets)
-    else:
-        print("  （没有草稿，跳过）")
-        rc = 0
+    _st_dirs = sorted(glob.glob(os.path.join(workspace_drafts(), "*", "draft.md")))
+    rc = run("check-structure.py", *_st_dirs) if _st_dirs else 0
     if rc != 0 and "--skip-structure-check" not in sys.argv:
         print("\n❌ 有草稿的结构不合格，构建中止。")
         print("   · 判据见 client.template.js 的 STRUCTURE_RULES（教程 03 结构工程）")
@@ -262,29 +280,16 @@ def main():
     #   某些题材本来就不适合第一人称，某些选题字段本来就该放弃。
     #   硬卡会让所有稿子写成同一个模子。但每一条都该被看见。
     print("\n=== check_quality（提示，不阻断）===")
-    _quality_targets = sorted(glob.glob(os.path.join(workspace_drafts(), "*", "draft.md")))
-    if _quality_targets:
-        run_quiet("check-quality.py", *_quality_targets)
-    else:
-        print("  （没有草稿，跳过）")
+    run_quiet("check-quality.py", *sorted(glob.glob(os.path.join(workspace_drafts(), "*", "draft.md"))))
     print("\n=== check_topic_align（提示，不阻断）===")
-    _align_targets = sorted(glob.glob(os.path.join(workspace_drafts(), "*", "draft.md")))
-    if _align_targets:
-        run_quiet("check-topic-align.py", *_align_targets)
-    else:
-        print("  （没有草稿，跳过）")
+    run_quiet("check-topic-align.py", *sorted(glob.glob(os.path.join(workspace_drafts(), "*", "draft.md"))))
 
     # 论点一致性：这篇文章有没有在讲同一件事。
     # 2026-11-10 加。立冬那篇脚本全绿但内容发散（10 个话题、3 个论点），
     # 现有检查器一条都没拦住——check-quality 只查形式，check-structure 只查套话。
     print("\n=== check_thesis ===")
     _thesis_dirs = sorted(d for d in glob.glob(os.path.join(workspace_drafts(), "*")) if os.path.isdir(d))
-    if not _thesis_dirs:
-        print("  （没有草稿，跳过）")
-        _rc_thesis = 0
-    else:
-        _rc_thesis = run("check-thesis.py", *_thesis_dirs)
-    if _rc_thesis != 0 and "--skip-thesis-check" not in sys.argv:
+    if _thesis_dirs and run("check-thesis.py", *_thesis_dirs) != 0 and "--skip-thesis-check" not in sys.argv:
         print("\n❌ 有稿子的论点不一致，构建中止。")
         print("   · 判据：主论点落地率、结尾回扣开头、单节占比、每节与主论点的关联度")
         print("   · 修法：找出跑题的那一节删掉或压成一句；结尾改成回扣主论点，不要另起新观点")
@@ -297,11 +302,7 @@ def main():
     print("\n=== check_cover ===")
     # check-cover 要的是目录列表，不是 draft.md 文件路径
     _cover_dirs = sorted(d for d in glob.glob(os.path.join(workspace_drafts(), "*")) if os.path.isdir(d))
-    if _cover_dirs:
-        rc = run("check-cover.py", *_cover_dirs)
-    else:
-        print("  （没有草稿，跳过）")
-        rc = 0
+    rc = run("check-cover.py", *_cover_dirs) if _cover_dirs else 0
     if rc != 0 and "--skip-cover-check" not in sys.argv:
         print("\n❌ 有封面的构图不合格，构建中止。")
         print("   · 判据见 配图路线.md 第四章：封面必须整幅画面，不允许纯色留白区")
@@ -314,12 +315,8 @@ def main():
     # 后半段连续 1324 字无图。这类问题靠肉眼数不出来，必须做成闸门。
     # 只检查已经有图位的稿子（queued 阶段还没写，不参与）。
     print("\n=== check_image_layout ===")
-    _layout_targets = sorted(glob.glob(os.path.join(workspace_drafts(), "*", "draft.md")))
-    if _layout_targets:
-        rc = run("check-image-layout.py", *_layout_targets)
-    else:
-        print("  （没有草稿，跳过）")
-        rc = 0
+    _layout_dirs = sorted(glob.glob(os.path.join(workspace_drafts(), "*", "draft.md")))
+    rc = run("check-image-layout.py", *_layout_dirs) if _layout_dirs else 0
     if rc != 0 and "--skip-layout-check" not in sys.argv:
         print("\n❌ 有草稿的配图位置不合格，构建中止。")
         print("   · 判据见 配图路线.md「图位数量与位置」")

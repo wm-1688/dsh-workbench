@@ -23,16 +23,19 @@ import base64
 import io
 import json
 import os
+import random
 import re
 import sqlite3
 import ssl
 import struct
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from importlib import util as importlib_util
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -45,6 +48,9 @@ DATA_DIR = os.path.join(WORKSPACE, "workbench")
 DB_PATH = os.path.join(DATA_DIR, "workbench.db")
 DB_SCRIPT = os.path.join(HERE, "image-db.py")
 OUT_ROOT = os.path.join(WORKSPACE, "image-studio")
+# 插图回写要复用 finalize.py 的占位符替换 + 重排版 —— 那套逻辑已经有校验，
+# 在这里重写一遍必然和它漂移（它还会改引号、剥引用、查图数）。
+FINALIZE_SCRIPT = os.path.join(HERE, "finalize.py")
 
 DEFAULT_HOST = "https://grsai.dakka.com.cn"
 DEFAULT_MODEL = "gpt-image-2.5"
@@ -456,6 +462,10 @@ def _load_skill_module(name, filename):
 
 
 _DECISION_CACHE = {}
+# 并发出图（2026-11-16）后，多个线程会同时进 style_decision / fusion_blocks。
+# 这两个缓存本身是**幂等**的（算错了重算一次结果一样），所以不加锁也不会算错，
+# 但会重复读盘、重复跑 resolve_reference。加把锁把重复计算挡掉，代价可忽略。
+_CACHE_LOCK = threading.Lock()
 
 
 def style_decision(model, style_id):
@@ -471,6 +481,17 @@ def style_decision(model, style_id):
     key = (model, style_id)
     if key in _DECISION_CACHE:
         return _DECISION_CACHE[key]
+    with _CACHE_LOCK:
+        # 双检：并发下可能刚被别的线程算好
+        if key in _DECISION_CACHE:
+            return _DECISION_CACHE[key]
+        d = _style_decision_uncached(model, style_id)
+        _DECISION_CACHE[key] = d
+        return d
+
+
+def _style_decision_uncached(model, style_id):
+    """真正干活的部分（原 style_decision 的函数体），由带锁的 style_decision 调用。"""
     custom = _custom_style_entry(style_id)
     if custom:
         traits = filter_traits(custom.get("traits", ""))
@@ -481,7 +502,6 @@ def style_decision(model, style_id):
              "include_prompt_traits": True,
              "prompt_traits": traits,
              "reference_path": None, "custom": True}
-        _DECISION_CACHE[key] = d
         return d
     try:
         rr = _load_skill_module("handraw_resolve_reference", "resolve_reference.py")
@@ -493,7 +513,6 @@ def style_decision(model, style_id):
              "use_reference_image": True, "include_prompt_traits": True,
              "prompt_traits": filter_traits(_style_traits(style_id)),
              "reference_path": None, "error": f"{type(e).__name__}: {e}"}
-    _DECISION_CACHE[key] = d
     return d
 
 
@@ -696,6 +715,15 @@ def fusion_blocks():
     global _FUSION_CACHE
     if _FUSION_CACHE is not None:
         return _FUSION_CACHE
+    with _CACHE_LOCK:
+        if _FUSION_CACHE is not None:      # 双检
+            return _FUSION_CACHE
+        _FUSION_CACHE = _fusion_blocks_uncached()
+        return _FUSION_CACHE
+
+
+def _fusion_blocks_uncached():
+    """读技能包里的融合块（原 fusion_blocks 的函数体），由带锁的外层调用。"""
     path = os.path.join(skill_root(), "skills", "style-fusion-prompter", "SKILL.md")
     if not os.path.isfile(path):
         raise RuntimeError(f"技能包里没有 style-fusion-prompter/SKILL.md：{path}")
@@ -713,8 +741,7 @@ def fusion_blocks():
 
     zh_mark = "缩微摄影，角色尺寸异常小，场景保持正常尺寸。"
     en_mark = "Miniature photography, the character scale is exceptionally small"
-    _FUSION_CACHE = {"zh": coexist(blocks[0], zh_mark), "en": coexist(blocks[1], en_mark)}
-    return _FUSION_CACHE
+    return {"zh": coexist(blocks[0], zh_mark), "en": coexist(blocks[1], en_mark)}
 
 
 def _is_style_id(v):
@@ -1005,6 +1032,30 @@ def build_prompt(style_id, theme, color_id=None, layout_id=None, with_ref=True,
     # ── 实发提示词：把「真的挂上去的图」对应的约束补上 ──
     send_zh = zh
     send_en = en
+
+    # 实发提示词里**去掉「参考作者」那一段**。
+    #
+    # 2026-11-17 实测（这是硬故障，不是洁癖）：gpt-image 系（2.5 与 2.6 都一样）对
+    # **真实艺术家名**有随机内容拦截，返回 status=violation。同一句主题反复打：
+    #   带作者名「Jean Jullien」→ 1/6 成功
+    #   去掉作者名            → 6/6 成功
+    # 换六个艺术家复测（Gemma Correll / Saul Steinberg / Tom Gauld / David Shrigley /
+    # Gary Larson / Roz Chast）带名全部 0–1/3，去掉名字 3/3。
+    # 而风格库 375 条里有 340 条填的是真实艺术家名 —— 等于绝大多数风格一用就炸。
+    # 历史成功过的 #374 / #390 之所以没事，是因为它们的 author 是虚构名
+    # （「Jacquemus / 雅克慕斯」「Editorial Doodle / 社论涂鸦」），不是人名。
+    #
+    # 为什么可以安全去掉：只要挂了垫图（want_ref），画风是由**那张图**承载的，
+    # 作者名对模型是冗余信息。可复制的 zh / en 仍保留作者名 —— 那是给人拿去
+    # 别处用的，不经过我们的接口，不受这条限制。
+    #
+    # 没挂垫图时保留作者名：那种情况下它是唯一的画风线索（典型是 CS-002 这类
+    # 声明 useReferenceImage: false 的自建风格，作者名本身是虚构的，不会触发拦截）。
+    author = (st.get("author") or "").strip()
+    if author and want_ref:
+        send_zh = send_zh.replace(f"参考作者/风格名称：{author}。", "")
+        send_en = send_en.replace(f"Reference author/style name: {author}.", "")
+
     refs_note = []
     if want_ref:
         refs_note.append("画风")
@@ -1120,6 +1171,27 @@ CHANNEL_GRSAI = "grsai"
 CHANNEL_OPENAI = "openai"
 
 
+def _retry_count():
+    """生图重试次数（含首次）。默认 3 = 首发 + 2 次重试。
+
+    并发出图会推高 429 概率，所以重试是并发功能的一部分，不是可选优化。
+    读取优先级：环境变量 DSH_WORKBENCH_IMAGE_RETRIES > settings 表 > 3。
+    夹在 1..6：1 等于不重试（保留这个出口给排障用），太高则失败要等很久才报出来。
+    """
+    raw = (os.environ.get("DSH_WORKBENCH_IMAGE_RETRIES") or "").strip()
+    if not raw:
+        try:
+            import appconfig
+            raw = str(appconfig.get("imageRetries", "") or "").strip()
+        except Exception:
+            raw = ""
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        n = 3
+    return max(1, min(6, n))
+
+
 def load_model_cfg(workspace):
     """模型名与渠道取自 .aws-article/config.yaml 的 image_model。
 
@@ -1200,6 +1272,9 @@ def load_model_cfg(workspace):
 
     return {"model": model, "size": size, "quality": quality, "key": key,
             "channel": channel,
+            # 重试次数（含首次）：429/5xx/网络抖动时用，见 generate_once。
+            # 从 settings 表读，读不到就用 3 次（1 次首发 + 2 次重试）。
+            "retries": _retry_count(),
             "host": host.rstrip("/"),
             "submitUrl": host.rstrip("/") + "/v1/api/generate",
             "resultUrl": host.rstrip("/") + "/v1/api/result",
@@ -1388,10 +1463,67 @@ def _http_raw(url, key, data, headers):
 
 
 def generate_once(cfg, prompt, images, size, quality):
-    """按渠道分流。"""
-    if cfg.get("channel") == CHANNEL_OPENAI:
-        return _generate_openai(cfg, prompt, images, size, quality)
-    return _generate_grsai(cfg, prompt, images, size, quality)
+    """按渠道分流。**带退避重试**（2026-11-16 加，为并发出图准备）。
+
+    为什么重试必须放在这一层：并发出图时 429（请求过于频繁）的概率会显著上升，
+    而原来这里一遇 429 就直接抛错，整个分镜判失败 —— 等于把并发收益又吐回去。
+    库里 27 次历史失败中已有 5 次是 429，串行都会撞上，并发只会更频繁。
+
+    只重试**明确可重试**的错误，不可重试的立刻抛出：
+      可重试  429（限流）、5xx（服务端抖动）、网络层 ERR（连接中断/超时）
+      不可重试 400/401/403/404（提示词违规、密钥错、模型不存在 —— 重试只是白烧配额）
+              以及任务状态 violation（内容违规，重试同样违规）
+
+    退避用 2s/4s/8s 三档，每档加随机抖动，避免多线程同时重试再次撞上限流。
+    """
+    attempts = max(1, int(cfg.get("retries") or 3))
+    last = None
+    for i in range(attempts):
+        try:
+            if cfg.get("channel") == CHANNEL_OPENAI:
+                return _generate_openai(cfg, prompt, images, size, quality)
+            return _generate_grsai(cfg, prompt, images, size, quality)
+        except Exception as e:
+            last = e
+            msg = str(e)
+            if not _is_retryable(msg) or i == attempts - 1:
+                raise
+            wait = (2 ** (i + 1)) + random.uniform(0, 1.2)
+            print(f"  ↻ 可重试错误（第 {i + 1}/{attempts - 1} 次重试，等 {wait:.1f}s）：{msg[:120]}",
+                  flush=True)
+            time.sleep(wait)
+    raise last
+
+
+def _is_retryable(msg):
+    """判断错误是否值得重试。**宁可少重试，不可重试违规类错误**。
+
+    违规（violation / 400 内容相似性）重试必然还是违规，只会白烧配额和时间；
+    而 429 与网络抖动是瞬时的，重试大概率成功。
+    """
+    low = (msg or "").lower()
+    # 明确不可重试的优先判定（否则下面的 400 规则会漏掉 violation 里的其他数字）
+    if "violation" in low or "violat" in low:
+        return False
+    if "没有解析到" in msg or "没有结果" in msg or "未返回任务" in msg:
+        return False
+    if "401" in msg or "403" in msg or "404" in msg:
+        return False
+    if "400" in msg:
+        return False
+    # 可重试
+    if "429" in msg:
+        return True
+    if "超时" in msg or "timeout" in low or "timed out" in low:
+        return True
+    if "err" in low and "http err" in low:
+        return True
+    for code in ("500", "502", "503", "504"):
+        if code in msg:
+            return True
+    if "connection" in low or "reset" in low or "eof" in low or "urlopen" in low:
+        return True
+    return False
 
 
 def _generate_grsai(cfg, prompt, images, size, quality):
@@ -1448,7 +1580,53 @@ def png_size(data):
             return w, h
         except Exception:
             return None, None
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        # VP8X / VP8 / VP8L 三种块，尺寸位置不同
+        try:
+            chunk = data[12:16]
+            if chunk == b"VP8 ":
+                w, h = struct.unpack("<HH", data[26:30])
+                return w & 0x3FFF, h & 0x3FFF
+            if chunk == b"VP8L":
+                b = data[21:25]
+                bits = struct.unpack("<I", b)[0]
+                return (bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1
+            if chunk == b"VP8X":
+                w = int.from_bytes(data[24:27], "little") + 1
+                h = int.from_bytes(data[27:30], "little") + 1
+                return w, h
+        except Exception:
+            return None, None
+    if data[:2] == b"\xff\xd8":
+        i = 2
+        try:
+            while i < len(data) - 9:
+                if data[i] != 0xFF:
+                    i += 1
+                    continue
+                mk = data[i + 1]
+                if mk in (0xC0, 0xC1, 0xC2):
+                    h, w = struct.unpack(">HH", data[i + 5:i + 9])
+                    return w, h
+                seg = struct.unpack(">H", data[i + 2:i + 4])[0]
+                i += 2 + seg
+        except Exception:
+            return None, None
     return None, None
+
+
+def image_ext(data):
+    """按**真实字节**判图片后缀。上游同一批任务里 PNG / WEBP 会混着返回，
+    一律按 .png 存会让下游（PIL、拼版、公众号上传）在很远的报错点炸掉。"""
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "png"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    if data[:2] == b"\xff\xd8":
+        return "jpg"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "gif"
+    return "png"
 
 
 # ── 文本模型配置 ────────────────────────────────────────────────
@@ -1506,11 +1684,18 @@ def _text_channel():
 
     2026-11-16 移除了 dsh 通道，但**保留这个函数** ——
     以后要加别的协议（如 Anthropic messages），在这里加个分支就行。
-    兼容旧值：如果 textModel 里填的是模型名（不是通道值），按 openai 处理。
+
+    注意：这里**不再把 'dsh' 当成合法值返回**。
+    以前它原样返回 'dsh'，调用方再报「不支持的通道」，
+    于是老安装（库里还存着 dsh）每次润色/分镜都直接失败，
+    而界面上又看不出原因 —— 属于自己给自己留的坑。
+    现在一律归到 openai：配置项本来就还在库里，
+    归一之后老用户不用重填就能继续用。
     """
     v = (_cfg("textModel", "") or "").strip().lower()
-    if v in ("openai", "dsh"):
-        return v
+    if v == "openai":
+        return "openai"
+    # 旧值 'dsh'、或历史遗留的模型名，统统按 openai 处理
     return "openai"
 
 
@@ -1722,6 +1907,133 @@ def text_chat(system, user, workspace=WORKSPACE, max_tokens=800, temperature=Non
                 "error": "返回里没有 choices 内容：" + body_txt[:200]}
     return {"ok": True, "text": txt, "model": model, "via": "api"}
 
+# 润色用的系统提示词。
+#
+# 2026-11-17 修：这段常量原先**只有引用没有定义**（1846 行用了它，全文件找不到赋值），
+# 所以点「帮我润色主题」必然抛 NameError: name 'POLISH_SYSTEM' is not defined，
+# 而且错误一路冒到界面上就是个看不懂的 toast。补在这里，紧挨着唯一使用它的函数。
+#
+# 要点和 SPLIT_SYSTEM 的区别：分镜是拆成多格，润色是**改写成一句画面描述**，
+# 不改用户的意图、不加原文没有的事实，只把「需求口吻」换成「可画的口吻」。
+POLISH_SYSTEM = (
+    "你是公众号配图的画面描述编辑。用户给你一段「需求式」的主题或一句话，"
+    "你把它改写成**一句可以直接拿去生图的画面描述**。"
+    "输出格式是硬性要求，违反就没法用："
+    "1) **只输出那一句话本身**。不要解释、不要评论、不要编号、不要引号、"
+    "不要 markdown、不要换行、不要「这句话说得很好」「适合……」这类读后感；"
+    "2) 保留原意，**不新增**原文没有的事实、数字、人名、机构、时间；"
+    "3) 把抽象需求落成可拍的具体画面：谁、在哪、做什么、什么景别、什么光；"
+    "4) 不写情绪形容词，用动作和物件代替（「他很失落」→「他坐在床边，鞋没脱」）；"
+    "5) 不出现文字要求（要写什么字、什么标题），那是另一个字段的事；"
+    "6) 长度控制在 20 到 60 字；"
+    "7) 原文已经是画面描述、没什么可改的，就原样返回，不要为了显得有用而改。"
+    "\n示例 —— 输入「他很失落」→ 输出「他坐在床边，鞋没脱，屋里没开灯」。"
+    "\n示例 —— 输入「想写就打开，不想写就关掉」→ 输出「一个人坐在书桌前，"
+    "手边摊着没合上的本子，窗外天刚亮」。"
+    "\n示例 —— 输入「秋天的夕阳，一个人坐在河堤上看远处亮起的路灯」→ 输出"
+    "「秋天的夕阳把河面染成橘色，一个人坐在河堤上，看对岸的路灯一盏盏亮起来」。"
+    "\n注意：输入常常是一整段文章或一句抽象观点，**不要复述它、不要评论它、"
+    "不要给建议**，只把它转成一个能拍的画面。"
+)
+
+
+def _strip_commentary(text):
+    """砍掉模型顺手补的「读后感」尾巴，保留画面描述本身。
+
+    实测（gemini-2.5-flash）即使提示词写了「只输出一句话」，它仍会补一句评论：
+      「河堤上吹着风，对岸的路灯一盏一盏亮起来……。适合发呆，也适合想点心事。」
+    这类尾巴会直接进生图提示词，把画面带跑偏。
+
+    为什么不用「只留第一句」：画面描述本身常是两句
+    （「天色是慢慢暗下去的。河堤上坐着一个人，看着对岸的路灯。」），
+    硬截会把主体砍掉。所以只砍**明显是评价/建议**的句子：
+    以「适合 / 这 / 所以 / 建议 / 可以 / 值得」开头，且不含画面动作的，才丢。
+    """
+    s = (text or "").strip()
+    if not s:
+        return s
+    # 按句末标点切成句子，保留标点
+    parts, buf = [], ""
+    for ch in s:
+        buf += ch
+        if ch in "。！？!?":
+            parts.append(buf.strip())
+            buf = ""
+    if buf.strip():
+        parts.append(buf.strip())
+    if len(parts) <= 1:
+        return s
+
+    # 明显的评论性开头
+    COMMENTARY = ("适合", "这年头", "所以", "建议", "可以当", "值得", "不得不",
+                  "说起来", "总之", "换句话", "与之相比", "相比之下", "最难得",
+                  "这样", "这般", "那一刻", "想想", "毕竟", "到底", "说实话")
+    # 明显的评论性**收尾**：这些词出现在句末，基本就是读后感而不是画面
+    TAIL = ("也挺好", "也很好", "挺好", "很舒服", "很美", "很治愈", "很暖",
+            "很真实", "很实在", "已是难得", "够了", "真好", "不错", "有点意思")
+    kept = []
+    for i, p in enumerate(parts):
+        head = p.lstrip("“”\"' 　")
+        if i > 0 and any(head.startswith(k) for k in COMMENTARY):
+            break            # 从第一句评论开始，后面全丢
+        if i > 0 and any(p.rstrip("。！？!?").endswith(k) for k in TAIL):
+            break            # 收尾是评价的，同样丢掉
+        kept.append(p)
+    out = "".join(kept).strip()
+    return out or s
+
+
+def _looks_like_caption(text):
+    """判断一段输出是不是「一句画面描述」，而不是点评/教程/列表。
+
+    实测 gemini-2.5-flash 面对长段落时会彻底跑偏：把它当成一篇待点评的文字，
+    回一篇带编号、带引用块、还反问「你是想当口号还是产品文案？」的评论。
+    这类输出直接当生图提示词是灾难，所以宁可多花一次调用重试，也不放它过去。
+
+    判定只看**结构特征**，不猜语义：
+      · 太长（>120 字）—— 画面描述不会这么长
+      · 有换行 / 编号 / markdown 记号 —— 一定是结构化输出
+      · 带问句 —— 在跟我对话，不是在描述画面
+    """
+    s = (text or "").strip()
+    if not s:
+        return False
+    if len(s) > 120:
+        return False
+    if "\n" in s:
+        return False
+    if any(k in s for k in ("1.", "2.", "3.", "**", ">", "：\n", "- ", "？")):
+        return False
+    # 第二人称对话腔 —— 模型跑成「跟你聊天」的典型标志。
+    # 实测「他很失落」会被它理解成情感咨询，回一句「听起来他现在很难过。你可以先陪着他……」
+    # 长度没超标、也没换行，只靠上面的规则会漏过去，所以单列一条。
+    for k in ("你可以", "你可以先", "建议你", "听起来", "希望你", "要不要我",
+              "如果它", "想被", "往往更有用", "试试", "不妨"):
+        if k in s:
+            return False
+    return True
+
+
+def _strip_prefix(text):
+    """去掉模型爱加的开头标签：「一句话画面：」「画面描述：」「输出：」等。
+
+    这些不是内容，留着会跟着进生图提示词，模型会把「一句话画面」当画面内容理解。
+    """
+    s = (text or "").strip()
+    for p in ("一句话画面：", "一句画面：", "画面描述：", "画面：", "描述：",
+              "输出：", "改写后：", "润色后：", "画面内容：", "画面内容:",
+              "一句话画面:", "画面描述:", "一张俯拍画面：", "俯拍画面：",
+              "一张画面：", "一幅画面：", "图片描述：", "图像描述："):
+        if s.startswith(p):
+            s = s[len(p):].strip()
+            break
+    # 兜底：以「一张/一幅/一个……画面/封面/插图/配图：」这类通用标签开头的也去掉
+    m = re.match(r"^(?:一张|一幅|一个|这句)?[^，。：:]{0,10}(?:画面|封面|插图|配图|图片|图像)[：:]\s*", s)
+    if m and m.end() < len(s):
+        s = s[m.end():].strip()
+    return s
+
+
 def polish_theme(theme, workspace=WORKSPACE):
     """把主题改写成画面描述。
 
@@ -1736,10 +2048,263 @@ def polish_theme(theme, workspace=WORKSPACE):
         return r
     # 模型偶尔会加引号或换行，清掉；但**不改内容**
     out = r["text"].strip().strip('"').strip("“”").replace("\n", " ").strip()
+    # 只砍「读后感」尾巴，不按句号硬截 —— 实测按第一句截会把画面主体砍掉
+    # （「天色是慢慢暗下去的。河堤上坐着一个人……」→ 只剩前半句）。
+    out = _strip_commentary(out)
+    out = _strip_prefix(out)
+
+    # 一次重试：结构不对（跑成点评/教程/反问）就换个问法再要一遍。
+    # 提示词已经写得很硬了还是压不住长段落，靠校验兜底比继续加形容词有效。
+    if not _looks_like_caption(out):
+        r2 = text_chat(
+            "你只输出一句中文画面描述，20 到 60 字，不解释不评论不反问不提建议。",
+            "把下面这段文字转成一个能拍的画面，只回一句话：\n" + src,
+            workspace, 200, temperature=0.3)
+        if r2.get("ok"):
+            out2 = r2["text"].strip().strip('"').strip("“”")
+            out2 = out2.replace("\n", " ").strip()
+            out2 = _strip_commentary(out2)
+            out2 = _strip_prefix(out2)
+            if _looks_like_caption(out2):
+                out = out2
+            else:
+                # 两次都不合格：**截到第一句**当最后手段，总比把一篇评论塞进提示词好
+                for i, ch in enumerate(out):
+                    if ch in "。！？!?":
+                        out = out[:i + 1].strip()
+                        break
     if not out:
         return {"ok": False, "error": "模型返回了空内容"}
     return {"ok": True, "original": src, "polished": out, "model": TEXT_MODEL,
             "changed": out != src}
+
+
+# ── 文章拆解（封面 / 配图）────────────────────────────────────────────
+#
+# 绘图工作台多了「选一篇文章」入口之后，需要两种拆解：
+#   · 封面 —— 读**整篇**，提炼一句封面画面描述（COVER_SYSTEM）。
+#     和 POLISH_SYSTEM 不是一回事：润色是「用户已经写了主题，改成可画的口吻」，
+#     20–60 字、只看那一句；封面是「从一篇文章里无中生有」，15–30 字、要通读全文。
+#     所以**不能复用** POLISH_SYSTEM，也不能 alias 成同一个常量。
+#   · 配图 —— 读整篇，拆成 N 个分镜（沿用 SPLIT_SYSTEM 的语义拆镜，只是把整篇当文案喂进去）。
+#
+# 两种拆解都**只产出文字**：拆出来直接写进「画面主题与内容」框，
+# 由用户看过再决定要不要出图。**不自动花掉一次出图**，也不自动替换用户已写的内容 ——
+# 拆解是「给素材」，出图是「花钱」，两件事不能合并成一个按钮。
+COVER_SYSTEM = (
+    "你是一名插画师。给你一篇文章，你要为它想封面。"
+    "\n\n"
+    "**只给一句是不够的** —— 同一篇文章可以有完全不同的封面切法，"
+    "编辑需要看到几种再挑一个。所以你要给 3 个候选，各走一个不同角度。"
+    "\n\n"
+    "3 个候选的角度分别固定为：\n"
+    "1) **主体动作**：文中最有戏的那个人/那双手，正在做什么；\n"
+    "2) **物件特写**：最能代表全文的那个东西，放大到近景，背景虚化；\n"
+    "3) **环境全景**：一个能装下全文信息的场景，人物小、空间大。\n"
+    "\n\n"
+    "每句写法：只写画面里看得见的东西 —— 谁、在哪、做什么、什么景别、什么光。"
+    "15 到 30 个字。"
+    "\n\n"
+    "参考这几句的样子：\n"
+    "· 一个人蹲在堆满纸箱的旧屋里，手里攥着一把断掉的数据线\n"
+    "· 深夜的办公桌前，三块屏幕同时亮着，人仰靠在椅背上闭着眼\n"
+    "· 一只手把最后一块零件按进拼图，桌面上散着十几个小零件\n"
+    "\n\n"
+    "**不是**这样写的（这是文章总结，不是画面）：\n"
+    "· 这篇文章讲了三条理念，分别是…… （✗ 复述内容，不可画）\n"
+    "· 这篇我读完了，写得挺实在 （✗ 评价，不可画）\n"
+    "· 初心、理念、改版说明 （✗ 关键词罗列，没有画面）\n"
+    "\n\n"
+    "输出格式是硬性要求，违反就没法用：\n"
+    "只输出一个 JSON 数组，三行，形如\n"
+    '["第一句画面描述", "第二句画面描述", "第三句画面描述"]\n'
+    "不要解释、不要编号、不要 markdown、不要加粗、不要引号之外的任何字符。"
+    "\n\n"
+    "内容要求：\n"
+    "1) **看整篇，不要只看标题**：文章的落点常在结尾，封面抓的是全文主张，不是开头那件事；"
+    "2) 每一句都要能一眼看懂、缩略图尺寸下成立，不要一句里塞并列的多件事；"
+    "3) 不写情绪形容词，用动作和物件代替（「他很焦虑」→「他把报表推到桌角，杯里的水在晃」）；"
+    "4) **绝不在画面里写字**：不提标题字、不提大字、不提任何文字元素，封面一律纯画面；"
+    "5) 不新增原文没有的事实、数字、人名、机构、时间。"
+)
+
+# 封面拆解只读这么多字：一篇 3000 字文章通读一遍足够，再多也只是浪费 token 和钱。
+# 截断策略是**头重脚轻**（见 article_brief 里 _head_tail）：开头交代背景，结尾交代落点，
+# 中间是最容易重复的论证段 —— 砍中间比砍结尾更不容易丢掉全文主张。
+COVER_READ_CHARS = 3500
+
+
+def _head_tail(text, limit):
+    """把长文压到 limit 字以内：保开头保结尾，砍中间。
+
+    不能简单 text[:limit] —— 公众号文章的落点几乎总在结尾，
+    只取开头会得到「开头那件事」当封面，那正是现在配图不贴主题的老毛病。
+    """
+    s = (text or "").strip()
+    if len(s) <= limit:
+        return s
+    head = int(limit * 0.45)
+    tail = limit - head
+    return s[:head] + "\n\n……（中间省略）……\n\n" + s[-tail:]
+
+
+def _looks_like_cover(out, src):
+    """封面描述的结构校验：像不像一句能画的画面。
+
+    实测（2026-11-17，v39 全文）：模型有一次直接回「这篇我读完了，写得挺实在」——
+    12 字、不含写字段、也没撞 _strip_commentary 的前缀表，于是被当成画面描述放进主题框。
+    主题框里出现评价文字，出图模型只会照着画一个「在读书的人」。
+    所以这里按**必须有画面名词**来筛，不靠"看起来不像点评"这种模糊判断。
+    """
+    s = (out or "").strip()
+    if len(s) < 8:
+        return False
+    if any(w in s for w in WRITE_IN_COVER) or any(w in s for w in WRITE_WORDS_COVER):
+        return False
+    # 必须有具体的画面元素：人/物/景/动作任一类词出现
+    return any(w in s for w in COVER_SCENE_WORDS)
+
+
+# 封面里**绝对不能出现**的写作类词（一旦出现就是在要求写字）
+WRITE_WORDS_COVER = ("写着", "写上", "写字", "文字", "大字", "字体", "标题字",
+                     "文案", "汉字", "标语", "字样")
+
+# 只属于「读后感 / 评价」的说法，出现即判不合格
+WRITE_IN_COVER = ("这篇", "读完", "写得", "文笔", "文章讲", "作者", "建议", "适合",
+                  "很好", "不错", "可以说", "值得一提", "经验", "打底", "捏合",
+                  "但", "却", "改一下", "润色", "优点", "缺点", "整体", "节奏")
+
+# 画面上真能看见的东西：人物、物件、自然、动作。用来确认这不是一句空话。
+COVER_SCENE_WORDS = (
+    "一个人", "男人", "女人", "老人", "孩子", "少年", "背影", "侧脸", "双手", "手指",
+    "桌", "椅", "窗", "门", "灯", "杯", "碗", "书", "纸", "笔", "手机", "屏",
+    "车", "路", "桥", "河", "海", "山", "树", "草", "花", "云", "天", "雨", "雪",
+    "街", "屋", "房", "墙", "楼", "阳", "光", "影", "床", "箱", "包", "衣",
+    "站", "坐", "躺", "走", "跑", "看", "拿", "放", "推", "握", "靠", "俯", "仰",
+)
+
+
+def _flatten_cover_items(arr):
+    """JSON 数组 → 纯字符串句子列表。
+
+    模型有两种合法退化形状，都要吃掉：
+      ["一句", "一句"]                          ← 期望的
+      [{"angle": "主体动作", "description": "…"}]  ← 实测出现过（v24）
+    第二种若只取 isinstance(x, str)，会把整个 dict 转成带花括号的串塞进主题框 ——
+    出图模型会照着画「一个叫 angle 的标签」，界面里也是一坨 JSON。
+    """
+    out = []
+    for x in (arr or []):
+        if isinstance(x, str):
+            t = x.strip()
+            if t:
+                out.append(t)
+        elif isinstance(x, dict):
+            # 按常见键名找那句描述，找不到就把所有字符串值拼起来当兜底
+            for k in ("description", "desc", "scene", "prompt", "text", "brief", "sentence"):
+                v = x.get(k)
+                if isinstance(v, str) and v.strip():
+                    out.append(v.strip())
+                    break
+            else:
+                vals = [v.strip() for v in x.values()
+                        if isinstance(v, str) and v.strip()]
+                if vals:
+                    # 最长的那句通常就是描述（angle/name 之类都很短）
+                    out.append(max(vals, key=len))
+    return out
+
+
+def _clean_cover_options(raw):
+    """模型回的封面候选 → 干净的句子列表。
+
+    入口是脏的：可能套着 JSON 数组、可能是 markdown 列表、可能带编号、
+    也可能干脆退化成一段话。**每种都要能吃掉**，吃不下就返回空列表交给重试，
+    不能在这里抛异常 —— 上层是界面按钮，炸了用户只看到一个看不懂的 toast。
+    """
+    s = (raw or "").strip()
+    if not s:
+        return []
+    items = []
+    # 首选 JSON 数组
+    data = _extract_json(s)
+    if isinstance(data, list):
+        items = _flatten_cover_items(data)
+    elif isinstance(data, dict):
+        # 模型偶尔包一层 {"options": [...]} 或 {"covers": [...]}
+        for k in ("options", "covers", "candidates", "list"):
+            if isinstance(data.get(k), list):
+                items = _flatten_cover_items(data[k])
+                break
+    if not items:
+        # 退回逐行：剥掉 - / * / 1. / 1) / 「」/ " " 这些壳
+        for ln in s.splitlines():
+            t = ln.strip()
+            if not t or t.startswith("```") or t in ("[", "]"):
+                continue
+            t = re.sub(r"^\s*(?:[-*·]|\d+[.、)．])\s*", "", t)
+            t = t.strip().strip('"').strip("“”").strip("「」").rstrip(",")
+            if t:
+                items.append(t)
+    out = []
+    for it in items:
+        t = _strip_prefix(_strip_commentary(it.strip().strip('"').strip("“”")
+                                            .replace("\n", " ").strip()))
+        # 一句就是一句：模型偶尔在一个候选里补第二句
+        for i, ch in enumerate(t):
+            if ch in "。！？!?" and i >= 8:
+                t = t[:i].strip()
+                break
+        if not t or not _looks_like_cover(t, ""):
+            continue
+        if t in out:                  # 去重：三个角度容易写出同一句
+            continue
+        out.append(t)
+        if len(out) >= 3:
+            break
+    return out
+
+
+def article_brief(text, workspace=WORKSPACE):
+    """读一整篇文章，产出一句封面画面描述。
+
+    只返回建议文本，**不改任何草稿文件、不出图** —— 调用方把它写进主题框，
+    由用户看过再决定。和 polish_theme 一样是「给建议」的定位。
+    """
+    src = (text or "").strip()
+    if not src:
+        return {"ok": False, "error": "text required（先选一篇文章）"}
+    body = _head_tail(src, COVER_READ_CHARS)
+    # 为什么加这段包装：直接把正文丢给模型，它会默认进入「总结这篇文章」的模式 ——
+    # 实测（2026-11-17，v39）三次都回了文章摘要或点评，哪怕系统提示词已经写了
+    # 「只输出一句画面描述」。把「这是素材，不是待处理的任务」写进 user 消息里，
+    # 才是模型真正看清自己要交什么的地方。
+    user = ("下面是一篇文章的全文。**不要总结它、不要评价它**。\n"
+            "你要交付的是 3 个不同角度的封面画面描述（主体动作 / 物件特写 / 环境全景）。\n"
+            "现在直接输出那个 JSON 数组。\n\n"
+            "【文章全文开始】\n" + body + "\n【文章全文结束】\n\n"
+            "3 个封面画面（JSON 数组，每句 15 到 30 字，只写看得见的东西）：")
+    r = text_chat(COVER_SYSTEM, user, workspace, 400, temperature=0.7)
+    if not r.get("ok"):
+        return r
+    opts = _clean_cover_options(r.get("text") or "")
+    # 一个合格的都没有：换个问法再要一遍（跟 polish_theme 同一思路 ——
+    # 提示词已经写硬了还压不住，靠校验兜底比继续加形容词有效）。
+    if not opts:
+        r2 = text_chat(
+            "给这篇文章想 3 个不同角度的封面画面，各一句话、15 到 30 字，"
+            "只写看得见的东西：谁、在哪、做什么。不评价文章，不写字，不加引号。"
+            "只输出 JSON 数组，如 [\"…\", \"…\", \"…\"]。",
+            "【文章全文】\n" + body, workspace, 300, temperature=0.8)
+        if r2.get("ok"):
+            opts = _clean_cover_options(r2.get("text") or "")
+    if not opts:
+        return {"ok": False,
+                "error": "模型没给出可用的封面画面（拿到的是点评式回复），再点一次试试",
+                "raw": (r.get("text") or "")[:200]}
+    # brief 保留成第一句，兼容老的调用方；options 是这次真正要给界面用的
+    return {"ok": True, "options": opts, "brief": opts[0],
+            "chars": len(opts[0]), "model": TEXT_MODEL}
 
 
 # ── 智能分镜（语义拆解）──────────────────────────────────────────────
@@ -1783,7 +2348,15 @@ SPLIT_SYSTEM = (
 
 
 def smart_split(text, want=0, workspace=WORKSPACE):
-    """用文本模型把内容拆成分镜。返回 {ok, panels, meta}。"""
+    """用文本模型把内容拆成分镜。返回 {ok, panels, meta}。
+
+    解析策略分三层，**顺序不能换**：
+      1) 正常要 JSON，`_extract_json` 四级抠取；
+      2) 抠不出就带着「格式纠正」再问一次 —— 这才是治本的：模型走偏的形式
+         是**无穷的**（markdown 脚本、方框流程图、表格、编号清单……都实测出现过），
+         逐种写兜底解析永远追不完，而一句「只回 JSON」+ 原文重发能一次纠正；
+      3) 还不行才用 markdown 兜底抢救（它确实能救回一部分，且不花钱）。
+    """
     src = (text or "").strip()
     if not src:
         return {"ok": False, "error": "text required"}
@@ -1801,6 +2374,46 @@ def smart_split(text, want=0, workspace=WORKSPACE):
     # 模型后面若还有重复内容就会整段带上 → 报 Extra data（实测踩过）。
     data = _extract_json(raw)
     if data is None:
+        # ── 第 2 层：格式纠正重试（预填充法）──
+        # 实测模型换着花样走偏：markdown 脚本、方框流程图、编号提纲、表格……
+        # **每补一种解析器它就换一种**，这条路追不完。
+        # 这层不再"请求它回 JSON"，而是**把 JSON 的开头塞给它当上下文**，
+        # 让它只能往下续写 —— 比任何措辞约束都硬（等于替它写完了第一个字符）。
+        fix = text_chat(
+            "你只输出 JSON，不要任何其他字符。不要 markdown、不要代码块围栏、"
+            "不要表格、不要编号清单、不要流程图、不要解释、不要总结句。",
+            ask + "\n\n文案：\n" + src +
+            '\n\n直接从这里续写，不要重复开头：\n{"cast": [], "panels": [{"scene": "',
+            workspace, 2000, temperature=0.1)
+        if fix.get("ok"):
+            # 补回被预填吃掉的 JSON 头部再解析
+            glued = '{"cast": [], "panels": [{"scene": "' + fix["text"].strip()
+            data = _extract_json(glued) or _extract_json(fix["text"].strip())
+            if data is not None:
+                raw = glued
+    if data is None:
+        # ── 第 3 层：兜底抢救 ──
+        # 模型走偏的形状是**开放的**：实测出现过 markdown 脚本、方框流程图、
+        # 编号提纲三种。这里按「信息最全 → 最差」的顺序各试一次，
+        # 救回来的都标记 source，用户看得出这批是降级的、可以点重拆。
+        for rescuer, tag in ((_rescue_markdown_panels, "markdown-fallback"),
+                             (_rescue_table_panels, "table-fallback"),
+                             (_rescue_numbered_panels, "numbered-fallback"),
+                             (_rescue_box_panels, "box-fallback")):
+            rescued = (rescuer(raw, want) if rescuer is _rescue_markdown_panels
+                       else rescuer(raw))
+            if rescued:
+                return {"ok": True, "panels": [x["scene"] for x in rescued],
+                        "dialogues": [x["dialogue"] for x in rescued],
+                        "notes": [x["note"] for x in rescued],
+                        "cast": [], "items": rescued,
+                        "meta": {"requested": want, "produced": len(rescued),
+                                 "withDialogue": sum(1 for x in rescued if x["dialogue"]),
+                                 "withNotes": sum(1 for x in rescued if x["note"]),
+                                 "castCount": 0,
+                                 "short": want > 0 and len(rescued) < want,
+                                 "source": tag, "splitter": tag.split("-")[0],
+                                 "auto": want <= 0}}
         return {"ok": False, "error": "模型返回里找不到合法 JSON", "raw": raw[:400]}
 
     # 形状兼容：新格式是 {cast, panels} 对象，旧格式（以及模型偶发退化）
@@ -1853,18 +2466,383 @@ def smart_split(text, want=0, workspace=WORKSPACE):
                      "source": "ai", "splitter": "ai", "auto": want <= 0}}
 
 
+def _rescue_table_panels(raw):
+    """从 markdown 表格里抢救分镜（实测出现过的第五种形状）。
+
+        | 格数 | 画面 | 文案 | 作用 |
+        |---|---|---|---|
+        | 1 | 加油机付款屏特写，金额被手指挡住一半 | 新闻说油价跌回8元了… | 开场抛出反差 |
+
+    「画面」列就是要的 scene，「文案」列当 dialogue。列名不定，
+    所以按表头猜：含「画面/场景/分镜」的列当 scene，含「文案/台词/对白」的当 dialogue。
+    猜不出来就退回「第二列当画面」—— 表格里第一列几乎总是编号。
+    """
+    rows = []
+    for ln in (raw or "").splitlines():
+        t = ln.strip()
+        if not t.startswith("|") or not t.endswith("|"):
+            continue
+        cells = [c.strip() for c in t.strip("|").split("|")]
+        if not cells:
+            continue
+        # 分隔行 |---|---|
+        if all(re.fullmatch(r":?-{2,}:?", c or "-") for c in cells if c):
+            continue
+        rows.append(cells)
+    if len(rows) < 2:
+        return []
+
+    header = rows[0]
+    def find(keys, dflt):
+        for i, h in enumerate(header):
+            if any(k in h for k in keys):
+                return i
+        return dflt
+    i_scene = find(("画面", "场景", "分镜", "内容"), 1 if len(header) > 1 else 0)
+    i_dlg = find(("文案", "台词", "对白", "文字"), -1)
+
+    out = []
+    for cells in rows[1:]:
+        if not any(c for c in cells):
+            continue
+        scene = cells[i_scene] if i_scene < len(cells) else ""
+        dlg = cells[i_dlg] if 0 <= i_dlg < len(cells) else ""
+        scene = re.sub(r"\*\*|__", "", scene).strip()
+        dlg = re.sub(r"\*\*|__", "", dlg).strip()
+        if scene or dlg:
+            out.append({"scene": scene or dlg, "dialogue": dlg if scene else "", "note": ""})
+    out = out[:24]
+    return out if len(out) >= 2 else []
+
+
+def _rescue_numbered_panels(raw):
+    """从「1. **标题**：描述」这种编号列表里抢救分镜。
+
+    实测（2026-11-17，整篇 2380 字）这是模型**最常走的偏路**，两次调用都是这个形状：
+
+        下面按内容节奏切成 8 格。
+        1. **封面：加满一箱，钱没变**
+           文案：新闻说油价跌回8元……
+        2. **算账：该省的25块5去哪了**
+           文案：50升，每升降五毛一……
+
+    它把「拆分镜」理解成「写提纲」，但每一格的画面信息和文案都在，
+    标题本身往往就是一句不错的画面描述。救回来比让用户白等强。
+    """
+    lines = (raw or "").splitlines()
+    head_re = re.compile(r"^\s*(\d{1,2})[.、）)]\s+(.*)$")
+    kv_re = re.compile(r"^\s*(?:文案|画面|旁白|台词|描述)\s*[：:]\s*(.*)$")
+    groups, cur = [], None
+    for ln in lines:
+        t = ln.rstrip()
+        if not t.strip() or t.strip().startswith("```"):
+            continue
+        m = head_re.match(t)
+        if m:
+            if cur:
+                groups.append(cur)
+            cur = {"head": m.group(2).strip(), "body": []}
+            continue
+        if cur is None:
+            continue
+        k = kv_re.match(t.strip())
+        if k:
+            cur["body"].append(k.group(1).strip())
+        elif cur["body"] or len(t.strip()) < 120:
+            # 续行：优先当画面/文案补充
+            cur["body"].append(t.strip())
+    if cur:
+        groups.append(cur)
+
+    out = []
+    for g in groups:
+        head = re.sub(r"\*\*|__", "", g["head"]).strip()
+        # 去掉「封面：」「收尾：」这类栏目名，保留后面的画面词
+        head = re.sub(r"^(?:封面|收尾|开头|结尾|标题)\s*[：:]\s*", "", head)
+        body = "，".join(x for x in g["body"] if x)
+        body = re.sub(r"\*\*|__", "", body).strip()
+        scene = (head + ("，" + body if body else "")).strip("， ")
+        scene = re.sub(r"\s+", " ", scene).strip()
+        if scene:
+            out.append({"scene": scene, "dialogue": "", "note": ""})
+    out = out[:24]
+    return out if len(out) >= 2 else []
+
+
+def _rescue_box_panels(raw):
+    """从方框流程图里抢救分镜。
+
+    实测（2026-11-17，整篇 2380 字）模型交过这种：
+
+        ┌─────────────────────┐
+        │ ① 加完油：数字没变   │
+        │ 「跌回8元」却没省25块 │
+        └──────────┬──────────┘
+                   ▼
+        ┌─────────────────────┐
+        │ ② 22轮：14涨6跌2搁浅 │
+        ...
+
+    它在「表达结构」上是对的（每格一个框、顺序清楚），只是不是 JSON。
+    框里的文字是**标题式短语**，不是完整画面描述 —— 所以救回来的东西
+    质量不如 JSON，但比「报错让用户白等」好。上层会用 source 标记它，
+    用户能看出这批分镜是降级的、可以重拆。
+    """
+    lines = (raw or "").splitlines()
+    # 找出所有「框内内容行」：以 │ 或 | 开头结尾
+    inner = []
+    for ln in lines:
+        t = ln.strip()
+        if not t:
+            continue
+        # 方框竖线（多种 unicode 变体）
+        if re.match(r"^[│┃|].*[│┃|]$", t):
+            body = t[1:-1].strip()
+            if body:
+                inner.append(body)
+    if not inner:
+        return []
+    # 按编号聚合成格：① ② / 1. 2. / 第1格
+    num_re = re.compile(r"^([①②③④⑤⑥⑦⑧⑨⑩⑪⑫]|\d{1,2}[.、）)]|第\s*\d{1,2}\s*格)\s*")
+    groups, cur = [], None
+    for body in inner:
+        if num_re.match(body):
+            if cur:
+                groups.append(cur)
+            cur = [num_re.sub("", body).strip()]
+        elif cur is not None:
+            cur.append(body)
+    if cur:
+        groups.append(cur)
+    out = []
+    for parts in groups:
+        scene = "，".join(p for p in parts if p).strip()
+        scene = re.sub(r"\s+", " ", scene).strip()
+        if scene:
+            out.append({"scene": scene, "dialogue": "", "note": ""})
+    out = out[:24]
+    return out if len(out) >= 2 else []
+
+
+def _rescue_markdown_panels(raw, want=0):
+    """从 markdown 分镜脚本里抢救出分镜：不是 JSON，但信息是全的。
+
+    实测（2026-11-17，用整篇文章拆分镜）模型交的是这种：
+
+        # 8格漫画脚本
+        **格1｜加油站近景** 或 **格1｜加油站近景**
+        一个人站在加油机前低头看付款屏幕……
+        旁白：油价跌回8元了。可这箱油的钱……
+        **格2｜账本特写**
+        ……
+
+    能救就救，因为画面描述和台词都在里面，报错只让用户白等一次；
+    但**救不了就老实返回空**，绝不硬凑 —— 拼错的分镜比没分镜更糟。
+    """
+    lines = (raw or "").splitlines()
+    # 分镜起始行：**格1｜xxx** / 格1｜xxx / **第1格** / 1. xxx（带「格」或景别词）
+    head_re = re.compile(
+        r"^\s*(?:[-*]\s*)?(?:\*\*)?\s*(?:格|第)\s*(\d{1,2})\s*(?:格)?"
+        r"\s*(?:[｜|:：]\s*)?(.*?)\s*(?:\*\*)?\s*$")
+    dlg_re = re.compile(r"^\s*(?:[-*]\s*)?(?:\*\*)?\s*(?:旁白|台词|对白|画内文字)"
+                        r"\s*(?:[｜|:：])\s*(.*?)\s*(?:\*\*)?\s*$")
+    items = []
+    cur = None
+    for ln in lines:
+        t = ln.rstrip()
+        if not t.strip() or t.strip().startswith("#"):
+            continue
+        m = head_re.match(t)
+        # 只认「明确的格子标题」：光有数字不算，得带「格」或后面有景别/画面词
+        if m and ("格" in t.split("｜")[0] or "格" in t.split("|")[0]
+                  or re.search(r"[｜|]", t) or len(m.group(2)) <= 20):
+            if cur:
+                items.append(cur)
+            label = (m.group(2) or "").strip().strip("*").strip()
+            cur = {"scene": [], "label": label, "dialogue": "", "note": ""}
+            continue
+        if cur is None:
+            continue
+        d = dlg_re.match(t)
+        if d:
+            cur["dialogue"] = (cur["dialogue"] + " " + d.group(1).strip()).strip()
+            continue
+        # 其余行当画面描述（去掉 markdown 粗体符号）
+        cur["scene"].append(t.strip().strip("*").strip())
+    if cur:
+        items.append(cur)
+
+    out = []
+    for it in items:
+        # 景别标签（「加油站近景」）本身是有效画面信息，拼在描述前面
+        parts = [it["label"]] if it["label"] else []
+        parts += [s for s in it["scene"] if s]
+        scene = "，".join(p for p in parts if p).strip()
+        scene = re.sub(r"\s+", " ", scene).strip()
+        if not scene and not it["dialogue"]:
+            continue
+        out.append({"scene": scene, "dialogue": it["dialogue"], "note": it["note"]})
+    out = out[:24]
+    # 少于 2 格说明没真识别出结构，宁可返回空让上层报错
+    return out if len(out) >= 2 else []
+
+
 # ── 数据层读写 ───────────────────────────────────────────────────────
 
 def db_api(payload):
-    """唯一的写入通道：转调 image-db.py api（保持单写者）。"""
-    b = base64.b64encode(json.dumps(payload, ensure_ascii=False).encode("utf-8")).decode()
-    out = subprocess.run([sys.executable, "-X", "utf8", DB_SCRIPT, "api", "--payload", b],
-                         capture_output=True, text=True, encoding="utf-8")
+    """唯一的写入通道：转调 image-db.py api（保持单写者）。
+
+    请求体走 stdin，不拼命令行 —— Windows 命令行上限 32767 字符，
+    base64 还会把体积放大 4/3，多镜分镜一次下发就能超（10 镜 × 1000 字 ≈ 41k）。
+    超限时 libuv 抛 spawn ENAMETOOLONG，进程根本没起来，现场什么日志都没有。
+    """
+    body = json.dumps(payload, ensure_ascii=False)
+    out = subprocess.run([sys.executable, "-X", "utf8", DB_SCRIPT, "api"],
+                         input=body, capture_output=True, text=True, encoding="utf-8")
     line = (out.stdout or "").strip().split("\n")[-1]
     try:
         return json.loads(line)
     except Exception:
         raise RuntimeError(f"数据层调用失败: {out.stdout} {out.stderr}")
+
+
+def write_back_illustrations(draft_id, workspace=WORKSPACE):
+    """把某个系列已出的插图写回草稿：imgs/img-01..N → finalize.py 替换占位符。
+
+    为什么不复用封面那条：封面是**一张图覆盖一个固定文件名**，
+    插图是**一组图按顺序对应正文里的 N 个占位符**。后者要对齐、要够数、要重排版，
+    finalize.py 已经把这件事做完了（占位符 → imgs/img-NN、数量不等就停），
+    这里只负责把系列产出按 panel_index 摆放成它认识的命名。
+
+    三条硬约束（来自 finalize.py:131）：
+      · 图片文件名必须以 img- 开头，否则它当「非正文图」过滤掉；
+      · 数量必须与正文占位符**严格相等**，否则它直接停下不排版；
+      · 封面不进正文（占位符里带「封面」字样的会被置空）。
+    所以这里先数占位符，多了少了都明确报错，不猜。
+    """
+    did = str(draft_id or "").strip()
+    if not did:
+        return {"ok": False, "error": "draftId missing"}
+    wb_script = os.path.join(HERE, "workbench-db.py")
+    listed = _wb_api(wb_script, {"op": "list-drafts"})
+    if not listed.get("ok"):
+        return {"ok": False, "error": "查草稿失败：" + str(listed.get("error") or "")[:160]}
+    draft = None
+    for d in (listed.get("drafts") or []):
+        if str(d.get("id")) == did:
+            draft = d
+            break
+    if draft is None:
+        return {"ok": False, "error": f"草稿 #{did} 不存在"}
+    rel_dir = (draft.get("path") or "").strip().replace("\\", "/").strip("/")
+    if not rel_dir:
+        return {"ok": False, "error": f"草稿 #{did} 没有目录"}
+    abs_dir = os.path.abspath(os.path.join(workspace, rel_dir))
+    root = os.path.abspath(workspace)
+    if abs_dir != root and not abs_dir.startswith(root + os.sep):
+        return {"ok": False, "error": "草稿目录越界，拒绝写入"}
+
+    # 1) 找出这篇对应的插图任务：params_json 里写了 draftId 且 role=article-illustration
+    jobs = (db_api({"op": "image-list-jobs", "limit": 400}).get("jobs") or [])
+    mine = []
+    for j in jobs:
+        try:
+            p = json.loads(j.get("params_json") or "{}")
+        except Exception:
+            p = {}
+        if str(p.get("draftId") or "") != did:
+            continue
+        if p.get("illustrationWriteBack") or p.get("role") == "article-illustration":
+            mine.append((j, p))
+    if not mine:
+        return {"ok": False, "error": "这篇文章还没有配图任务"}
+
+    # 2) 按 panel_index 排序取已完成的图。同一 panel 重跑过就取最新那张。
+    by_panel = {}
+    for j, p in mine:
+        if j.get("status") != "done":
+            continue
+        rows = db_api({"op": "image-list-assets", "jobId": j["id"], "limit": 8}).get("assets") or []
+        if not rows:
+            continue
+        idx = int(j.get("panel_index") or 0) or (len(by_panel) + 1)
+        # assets 是倒序（最新在前），取第一条
+        by_panel[idx] = rows[0]
+    if not by_panel:
+        return {"ok": False, "error": "配图还没出完（没有任何已完成的图）"}
+
+    # 3) 数正文占位符（封面除外）—— 与 finalize.py 的算法一致
+    md_path = os.path.join(abs_dir, "draft.md")
+    if not os.path.isfile(md_path):
+        return {"ok": False, "error": "这篇还没有 draft.md"}
+    with io.open(md_path, encoding="utf-8") as f:
+        text = f.read()
+    marks = re.findall(r"!\[([^\]]+)\]\(placeholder\)", text)
+    want = [m for m in marks if not m.startswith("封面")]
+    got = len(by_panel)
+    if want and got != len(want):
+        return {"ok": False,
+                "error": f"图数({got}) 与正文图位({len(want)}) 不一致，先补齐/删掉多余分镜再回写"}
+    if not want:
+        return {"ok": False, "error": "正文里没有图片占位符（先把图位插进正文）"}
+
+    # 4) 摆放成 finalize.py 认识的 img-NN 命名。先清掉旧的 img-*，
+    #    否则上一轮留下的图会让「图片数 ≠ 图位数」直接把它拦住。
+    img_dir = os.path.join(abs_dir, "imgs")
+    os.makedirs(img_dir, exist_ok=True)
+    for old in os.listdir(img_dir):
+        if old.startswith("img-") and os.path.splitext(old)[1].lower() in (
+                ".png", ".webp", ".jpg", ".jpeg"):
+            try:
+                os.remove(os.path.join(img_dir, old))
+            except Exception:
+                pass
+    placed = []
+    for n, idx in enumerate(sorted(by_panel), 1):
+        src = by_panel[idx].get("path")
+        if not src or not os.path.isfile(src):
+            return {"ok": False, "error": f"第 {idx} 镜的图文件找不到了：{src}"}
+        ext = os.path.splitext(src)[1].lower() or ".png"
+        dst = os.path.join(img_dir, f"img-{n:02d}{ext}")
+        try:
+            with open(src, "rb") as a, open(dst, "wb") as b:
+                b.write(a.read())
+        except Exception as e:
+            return {"ok": False, "error": f"第 {n} 张图落盘失败：{e}"}
+        placed.append(os.path.basename(dst))
+
+    # 5) 跑 finalize：占位符替换 + 重排版（它自己会做引号修正、去引用、排版、校验）
+    try:
+        r = subprocess.run([sys.executable, "-X", "utf8", FINALIZE_SCRIPT, abs_dir],
+                           capture_output=True, text=True, encoding="utf-8",
+                           cwd=workspace, timeout=180)
+    except Exception as e:
+        return {"ok": False, "error": f"排版失败：{e}"}
+    if r.returncode != 0:
+        tail = ((r.stdout or "") + (r.stderr or "")).strip().split("\n")[-3:]
+        return {"ok": False, "error": "finalize 失败：" + " / ".join(tail)[:300]}
+    return {"ok": True, "inserted": len(placed), "files": placed}
+
+
+def _wb_api(script, payload):
+    """转调 workbench-db.py api（草稿在那个库，不在 image-db.py）。
+
+    返回 {ok:False, error} 而不是抛异常 —— 调用方（封面回写）是「尽力而为」的路径，
+    回写失败不该把整个出图任务判 failed：图已经出来了、钱已经花了。
+    """
+    body = json.dumps(payload, ensure_ascii=False)
+    try:
+        out = subprocess.run([sys.executable, "-X", "utf8", script, "api"],
+                             input=body, capture_output=True, text=True,
+                             encoding="utf-8", cwd=WORKSPACE)
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    line = (out.stdout or "").strip().split("\n")[-1]
+    try:
+        return json.loads(line)
+    except Exception:
+        return {"ok": False,
+                "error": f"数据层返回无法解析：{(out.stdout or '')[:160]} {(out.stderr or '')[:160]}"}
 
 
 def read_job(job_id):
@@ -1879,7 +2857,7 @@ def read_job(job_id):
 
 # ── run ──────────────────────────────────────────────────────────────
 
-def run_job(job_id, workspace=WORKSPACE):
+def run_job(job_id, workspace=WORKSPACE, log_prefix=""):
     job = read_job(job_id)
     if job is None:
         raise SystemExit(f"任务不存在：#{job_id}")
@@ -1889,12 +2867,16 @@ def run_job(job_id, workspace=WORKSPACE):
     os.makedirs(out_dir, exist_ok=True)
     log_path = os.path.join(out_dir, "generation.log")
     logf = io.open(log_path, "a", encoding="utf-8")
+    log_lock = threading.Lock()      # 同一任务内 arms 也可能并发，日志行不能交错
 
     def log(msg):
-        line = f"[{time.strftime('%H:%M:%S')}] {msg}"
-        print(line, flush=True)
-        logf.write(line + "\n")
-        logf.flush()
+        # 并发跑漫画流时，多镜的日志会同时往一个 generation.log 里写。
+        # 加 log_prefix（如 "[镜3]"）才能一眼分清哪行是哪一镜，否则交错成一团没法查。
+        line = f"[{time.strftime('%H:%M:%S')}] {log_prefix}{msg}"
+        with log_lock:
+            print(line, flush=True)
+            logf.write(line + "\n")
+            logf.flush()
 
     try:
         cfg = load_model_cfg(workspace)
@@ -1964,43 +2946,38 @@ def run_job(job_id, workspace=WORKSPACE):
         todo = ["text", "ref"] if arms == "both" else [arms]
 
         assets = []
-        for arm in todo:
-            use_ref = (arm == "ref")
-            # **实发提示词**：图文模式下可复制版不含隔离块，但真发出去的那份要含
-            prompt = built["sendZh"] if use_ref else built["zh"]
-            # 融合路径**本来就不垫编号参考图**（技能契约是靠文字把两套风格完整展开），
-            # 所以「没有参考图」对它来说是正常状态，不是错误 —— 之前这里一刀切地要求必须有图，
-            # 结果融合任务自己把自己拦死了（RuntimeError: 任务要求垫图，但没有解析到任何参考图）。
-            # 同理还有两类：基准图（bare）与**风格自己声明不垫**（styleNoRef，如 CS-002）——
-            # 后者是「故意不垫」，不是「解析不到」，不能按错误处理。
-            # 非融合路径下用户明确选了「垫入参考图」却解析不到图，那才是真错误（例如该风格没有样图）。
-            if use_ref and not ref_b64 and not asset_b64 and not built.get("fusion") \
-                    and not built.get("bare") and not built.get("styleNoRef"):
-                raise RuntimeError(
-                    f"任务要求垫入参考图，但风格 {job.get('style_id')} 没有解析到样图；"
-                    "请改用「只给文字」，或换一个带样图的风格")
-            # 顺序必须与提示词里写的一致：先画风、后资产
-            imgs = (([ref_b64] if ref_b64 else []) + asset_b64) if use_ref else []
-            blob, dt, url = generate_once(cfg, prompt, imgs,
-                                          size, job.get("quality"))
-            w, h = png_size(blob)
-            name = f"{job_id}-{arm}.png"
-            path = os.path.join(out_dir, name)
-            with open(path, "wb") as f:
-                f.write(blob)
-            rel = os.path.relpath(path, WORKSPACE).replace("\\", "/")
-            assets.append({"arm": arm, "path": path, "relPath": rel, "bytes": len(blob),
-                           "width": w, "height": h, "model": cfg["model"],
-                           "elapsedMs": int(dt * 1000), "styleId": job.get("style_id"),
-                           "theme": job.get("theme")})
-            log(f"  {arm} 出图成功 {w}x{h} {len(blob)}B 用时 {dt:.0f}s")
+        # arms=both 时两条道（垫图 / 纯文字）互不依赖，**并发跑**：
+        # 一次任务两图，串行等于把等待翻倍。结果仍按 todo 顺序收集，文件名按 arm 区分不冲突。
+        arm_results = {}
+        if len(todo) > 1:
+            with ThreadPoolExecutor(max_workers=len(todo)) as pool:
+                futs = {}
+                for arm in todo:
+                    futs[pool.submit(
+                        _run_arm, arm, job, built, cfg, ref_b64, asset_b64,
+                        size, out_dir, job_id, log)] = arm
+                for fut in as_completed(futs):
+                    arm = futs[fut]
+                    arm_results[arm] = fut.result()
+        else:
+            arm = todo[0]
+            arm_results[arm] = _run_arm(arm, job, built, cfg, ref_b64, asset_b64,
+                                        size, out_dir, job_id, log)
+        for arm in todo:                 # 按 todo 顺序收，保证 asset 行序稳定
+            assets.append(arm_results[arm])
 
         db_api({"op": "image-finish", "jobId": job_id, "assets": assets,
                 "calls": len(assets), "model": cfg["model"], "endpoint": cfg["submitUrl"],
                 "promptZh": built["zh"], "promptEn": built["en"],
                 "usageNote": f"任务 #{job_id}"})
         log(f"完成：{len(assets)} 张（计费 {len(assets)} 次）")
-        return {"ok": True, "jobId": job_id, "assets": assets}
+        # 封面自动回写：**在 image-finish 之后**，图已经入库、账已经记上，
+        # 回写即使出问题也不该影响「这张图算不算出成功」。
+        wb = _write_back_from_job(job, assets, log)
+        out = {"ok": True, "jobId": job_id, "assets": assets}
+        if wb is not None:
+            out["coverWriteBack"] = wb
+        return out
     except Exception as e:
         msg = f"{type(e).__name__}: {e}"
         log(f"失败：{msg}")
@@ -2013,13 +2990,182 @@ def run_job(job_id, workspace=WORKSPACE):
         logf.close()
 
 
+# ── 封面回写 ─────────────────────────────────────────────────────────
+#
+# 绘图工作台里选「文章封面 + 某篇文章」出的图，出完要**自动回写到那篇文章**：
+# 落到 <草稿目录>/imgs/cover.png，并把 drafts.cover 指向它。
+#
+# 三个决定：
+#   · 路径固定 imgs/cover.png —— check-cover.py:206 只认这一个文件名，
+#     发布链路上传封面也按它找。改成像 img-01.png 那样编号就整条链路断了。
+#   · 先备份 cover.png.bak 再覆盖 —— 用户重出一张封面，旧的那张不能凭空消失。
+#   · 回写失败**不算任务失败**。图已经出来了、钱已经花了，
+#     因为一个路径问题把整个任务判 failed，用户会以为图也没了。
+#     所以这条路径吞异常，把结果放进返回值，界面按需提示。
+def write_back_cover(asset_path, draft_id, workspace=WORKSPACE):
+    """把出好的封面写回草稿。返回 {ok, cover, backup, error}。
+
+    注意：草稿在**另一个库**（workbench-db.py），不是 image-db.py。
+    db_api() 走的是 image-db.py，拿它查草稿只会得到 unknown op: list-drafts。
+    """
+    did = str(draft_id or "").strip()
+    if not did:
+        return {"ok": False, "error": "draftId missing"}
+    if not asset_path or not os.path.isfile(asset_path):
+        return {"ok": False, "error": f"封面文件不存在：{asset_path}"}
+    wb_script = os.path.join(HERE, "workbench-db.py")
+    listed = _wb_api(wb_script, {"op": "list-drafts"})
+    if not listed.get("ok"):
+        return {"ok": False, "error": "查草稿失败：" + str(listed.get("error") or "")[:160]}
+    draft = None
+    for d in (listed.get("drafts") or []):
+        # id 是整数，draft_id 从 params_json 回来是字符串 —— 两边都按字符串比
+        if str(d.get("id")) == did:
+            draft = d
+            break
+    if draft is None:
+        return {"ok": False, "error": f"草稿 #{did} 不存在"}
+    rel_dir = (draft.get("path") or "").strip().replace("\\", "/").strip("/")
+    if not rel_dir:
+        return {"ok": False, "error": f"草稿 #{did} 没有目录"}
+    # 目录越界守卫：path 是库里的数据，但库也可能被手改过
+    abs_dir = os.path.abspath(os.path.join(workspace, rel_dir))
+    root = os.path.abspath(workspace)
+    if abs_dir != root and not abs_dir.startswith(root + os.sep):
+        return {"ok": False, "error": "草稿目录越界，拒绝写入"}
+    os.makedirs(os.path.join(abs_dir, "imgs"), exist_ok=True)
+    dst = os.path.join(abs_dir, "imgs", "cover.png")
+    backup = ""
+    if os.path.isfile(dst):
+        bak = dst + ".bak"
+        try:
+            if os.path.isfile(bak):
+                os.remove(bak)
+            os.replace(dst, bak)
+            backup = os.path.relpath(bak, workspace).replace("\\", "/")
+        except Exception as e:
+            return {"ok": False, "error": f"备份旧封面失败：{e}"}
+    try:
+        with open(asset_path, "rb") as src, open(dst, "wb") as out:
+            out.write(src.read())
+    except Exception as e:
+        return {"ok": False, "error": f"写封面失败：{e}"}
+    cover_rel = os.path.relpath(dst, workspace).replace("\\", "/")
+    upd = _wb_api(wb_script, {"op": "set-draft", "id": did, "cover": cover_rel})
+    if not upd.get("ok"):
+        return {"ok": False, "cover": cover_rel, "backup": backup,
+                "error": f"封面已落盘，但库里的 cover 字段没更新：{upd.get('error')}"}
+    return {"ok": True, "cover": cover_rel, "backup": backup}
+
+
+def _write_back_from_job(job, assets, log):
+    """按任务参数决定要不要回写封面，并对每一张都写（arms=both 时后一张覆盖前一张）。
+
+    这么处理 arms=both 是**故意的**：两张都出了，无法替用户选哪张才是最终封面。
+    按 todo 顺序（text 在前）收，所以留下来的是 ref 那张 —— 有风格垫图的那张。
+    """
+    try:
+        params = json.loads(job.get("params_json") or "{}")
+    except Exception:
+        params = {}
+    did = params.get("draftId")
+    if not did or not params.get("coverWriteBack"):
+        return None
+    last = None
+    for a in assets:
+        r = write_back_cover(a.get("path"), did)
+        log(f"封面回写 {did}：{'成功 → ' + r['cover'] if r.get('ok') else '失败（' + str(r.get('error')) + '）'}")
+        last = r
+    return last
+
+
 # ── 漫画流：批量跑 ───────────────────────────────────────────────────
 
-def run_series(series_id, workspace=WORKSPACE):
-    """按顺序跑完一个漫画流的所有待跑分镜。
+DEFAULT_CONCURRENCY = 3      # 并发出图默认路数，见 series_concurrency()
 
-    **一个进程跑完整组**：N 个分镜不该 spawn N 个进程（每个都要重新加载索引、
-    逐一读盘解析），而且串行能让日志按镜序连成一条，出问题好查。
+
+def _run_arm(arm, job, built, cfg, ref_b64, asset_b64, size, out_dir, job_id, log):
+    """跑一条道（ref 垫图 / text 纯文字），返回一条 asset 记录。
+
+    从 run_job 的循环体里抽出来，为的是 arms=both 时两条道能并发跑
+    （见 run_job 里的 ThreadPoolExecutor）。抽出来也让"一条道失败"的语义更清楚：
+    抛异常 → 整个任务判失败（image-finish 拿不到完整 assets），与原来一致。
+    """
+    use_ref = (arm == "ref")
+    # **实发提示词**：图文模式下可复制版不含隔离块，但真发出去的那份要含
+    prompt = built["sendZh"] if use_ref else built["zh"]
+    # 融合路径**本来就不垫编号参考图**（技能契约是靠文字把两套风格完整展开），
+    # 所以「没有参考图」对它来说是正常状态，不是错误 —— 之前这里一刀切地要求必须有图，
+    # 结果融合任务自己把自己拦死了（RuntimeError: 任务要求垫图，但没有解析到任何参考图）。
+    # 同理还有两类：基准图（bare）与**风格自己声明不垫**（styleNoRef，如 CS-002）——
+    # 后者是「故意不垫」，不是「解析不到」，不能按错误处理。
+    # 非融合路径下用户明确选了「垫入参考图」却解析不到图，那才是真错误（例如该风格没有样图）。
+    if use_ref and not ref_b64 and not asset_b64 and not built.get("fusion") \
+            and not built.get("bare") and not built.get("styleNoRef"):
+        raise RuntimeError(
+            f"任务要求垫入参考图，但风格 {job.get('style_id')} 没有解析到样图；"
+            "请改用「只给文字」，或换一个带样图的风格")
+    # 顺序必须与提示词里写的一致：先画风、后资产
+    imgs = (([ref_b64] if ref_b64 else []) + asset_b64) if use_ref else []
+    blob, dt, url = generate_once(cfg, prompt, imgs, size, job.get("quality"))
+    w, h = png_size(blob)
+    # 后缀按**真实字节**定，不能一律写 .png。
+    #
+    # 2026-11-17 实测：同一个接口同一批任务，#417 返回的是 WEBP 而其余是 PNG。
+    # 存成 xxx.png 后 PIL 报「extension declares image/png but the bytes use a different
+    # image format」，下游看图、拼版、公众号上传全都会断，而且报错点离真因很远。
+    ext = image_ext(blob)
+    name = f"{job_id}-{arm}.{ext}"
+    path = os.path.join(out_dir, name)
+    with open(path, "wb") as f:
+        f.write(blob)
+    rel = os.path.relpath(path, WORKSPACE).replace("\\", "/")
+    log(f"  {arm} 出图成功 {w}x{h} {len(blob)}B 用时 {dt:.0f}s")
+    return {"arm": arm, "path": path, "relPath": rel, "bytes": len(blob),
+            "width": w, "height": h, "model": cfg["model"],
+            "elapsedMs": int(dt * 1000), "styleId": job.get("style_id"),
+            "theme": job.get("theme")}
+
+
+def series_concurrency():
+    """漫画流并发出图的路数。**默认 3**，可用设置页 / 环境变量调。
+
+    为什么默认 3 而不是「越多越好」：
+      - 单张出图本身是网络等待（提交后每 3 秒轮询一次），所以并发的收益
+        几乎全部来自「多张同时在等」，3 路就能吃掉大部分等待；
+      - 接口会限流（429），路数越高撞限流概率越大，而重试会吃掉收益；
+      - 每路是一个线程 + 一次完整读盘，再高对单机也是负担。
+
+    读取优先级：环境变量 DSH_WORKBENCH_IMAGE_CONCURRENCY > settings 表 > 默认 3。
+    上限 8、下限 1：0 或负数会让整个漫画流卡死，必须夹住。
+    """
+    raw = (os.environ.get("DSH_WORKBENCH_IMAGE_CONCURRENCY") or "").strip()
+    if not raw:
+        try:
+            import appconfig
+            raw = str(appconfig.get("imageConcurrency", "") or "").strip()
+        except Exception:
+            raw = ""
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        n = DEFAULT_CONCURRENCY
+    return max(1, min(8, n))
+
+
+def run_series(series_id, workspace=WORKSPACE):
+    """跑完一个漫画流的所有待跑分镜。**多镜并发出图**（2026-11-16 改）。
+
+    原来这里是 `for j in jobs: run_job(...)` 严格串行 —— 一个 6 镜的漫画流
+    要等 6 次「提交 → 每 3 秒轮询 → 下载」，而每张图实际耗时中位数 43 秒，
+    其中绝大部分是轮询空转。并发后多镜同时等，墙钟时间大幅下降。
+
+    为什么是线程池而不是多进程：单张出图的瓶颈是网络等待（`time.sleep` 轮询），
+    Python 的 GIL 在 IO 等待时会释放，线程池足够；而多进程要各自重新加载风格索引、
+    逐个读盘解析，反而更慢，还会让日志分裂成 N 个文件。
+
+    并发路数见 series_concurrency()，默认 3。**结果仍按镜序输出**：
+    虽然完成顺序是乱的，但汇总时按 panel_index 排序，报错信息也带镜号。
     """
     conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
@@ -2035,17 +3181,76 @@ def run_series(series_id, workspace=WORKSPACE):
 
     db_api({"op": "series-update", "seriesId": series_id, "status": "running", "error": None})
     total = len(jobs)
-    done = 0
-    for j in jobs:
-        r = run_job(j["id"], workspace)
-        if r.get("ok"):
-            done += 1
+    workers = min(series_concurrency(), total) if total else 1
+    print(f"漫画流 #{series_id}：{total} 镜，并发 {workers} 路", flush=True)
+
+    results = {}
+    if total:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = {}
+            for j in jobs:
+                # 镜号从 1 数起更符合人的习惯（库里 panel_index 从 0 开始）
+                label = f"[镜{j['panel_index'] + 1}] "
+                futs[pool.submit(run_job, j["id"], workspace, label)] = j
+            for fut in as_completed(futs):
+                j = futs[fut]
+                try:
+                    results[j["id"]] = fut.result()
+                except Exception as e:
+                    # run_job 自己会吞异常并标 image-fail，走到这里说明是更外层的意外
+                    results[j["id"]] = {"ok": False, "jobId": j["id"],
+                                        "error": f"{type(e).__name__}: {e}"}
+
+    # 按镜序汇总（完成顺序是乱的，报错要按镜号读才顺）
+    done = sum(1 for j in jobs if (results.get(j["id"]) or {}).get("ok"))
+    failed = [f"镜{j['panel_index'] + 1}" for j in jobs
+              if not (results.get(j["id"]) or {}).get("ok")]
     ok = total > 0 and done == total
-    # 部分成功也要如实标出来，但不能因为一镜失败就把整组标成失败
+    # 「没有待跑的分镜」不是失败 —— 这一组可能早就全出完了，只是又来跑一次。
+    # 原来 ok 对 total==0 恒为 false，于是自动回写被误判成「有镜失败、图上不齐」而跳过，
+    # 表现就是「点重跑/再跑一次，文章里的图没更新」（实测踩到）。
+    all_done = (total == 0) or (done == total)
     db_api({"op": "series-update", "seriesId": series_id,
-            "status": "done" if done > 0 else "failed",
-            "error": None if ok else f"{total - done}/{total} 镜失败"})
-    return {"ok": ok, "seriesId": series_id, "total": total, "done": done}
+            "status": "done" if (done > 0 or total == 0) else "failed",
+            "error": None if ok else (None if total == 0
+                                      else f"{total - done}/{total} 镜失败（{'、'.join(failed)}）")})
+    out = {"ok": all_done, "seriesId": series_id, "total": total, "done": done,
+           "workers": workers, "failed": failed}
+
+    # ── 文章配图：整组出完**自动回写正文**（2026-11-18 加）──
+    #
+    # 为什么放在这里而不是让用户点按钮：配图这个动作的语义就是「把图放进文章」，
+    # 出完再让人手工点一次「写回正文」是多余的一步 —— 实测反馈「图生成了但没回写」。
+    # 放在 run_series 末尾而不是每个 run_job 里：逐镜回写会反复改写 article.md、
+    # 反复重排版 N 次，而且中间态图数不齐，finalize 会直接拒绝（数量必须与图位相等）。
+    #
+    # **只在整组都成功时回写**：部分失败时图上不齐，硬写进去会得到一篇图位对不上的文章。
+    # 失败不算任务失败 —— 图已经出来了，钱已经花了，回写是附加动作。
+    try:
+        conn2 = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+        conn2.row_factory = sqlite3.Row
+        try:
+            prow = conn2.execute(
+                "SELECT params_json FROM image_jobs WHERE series_id=? "
+                "AND params_json IS NOT NULL LIMIT 1", (series_id,)).fetchone()
+        finally:
+            conn2.close()
+        sp = json.loads((prow["params_json"] if prow else "") or "{}")
+        did = sp.get("draftId")
+        if did and sp.get("illustrationWriteBack"):
+            if not all_done:
+                out["writeBack"] = {"ok": False, "skipped": True,
+                                    "error": f"有 {total - done} 镜没出成功，图上不齐，暂不回写"}
+            else:
+                wb = write_back_illustrations(did, workspace)
+                out["writeBack"] = wb
+                print(f"自动回写 #{did}："
+                      + (f"成功，替换 {wb.get('inserted')} 张" if wb.get("ok")
+                         else "失败（" + str(wb.get("error")) + "）"), flush=True)
+    except Exception as e:
+        out["writeBack"] = {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+    return out
 
 
 
@@ -2076,6 +3281,17 @@ def main():
 
     p = sub.add_parser("polish", help="把「需求式」主题改写成「画面描述」（只给建议，绝不自动替换）")
     p.add_argument("--theme", required=True)
+    p.add_argument("--workspace", default=WORKSPACE)
+
+    p = sub.add_parser("article-brief",
+                       help="读一整篇文章，产出一句封面画面描述（只给建议，不出图不改稿）")
+    p.add_argument("--text", required=True,
+                   help="文章全文；也可以传 @相对路径 让脚本自己读（长文走文件，避开命令行长度上限）")
+    p.add_argument("--workspace", default=WORKSPACE)
+
+    p = sub.add_parser("illustrate-writeback",
+                       help="把某篇文章已出的插图写回正文（占位符替换 + 重排版）")
+    p.add_argument("--draft", required=True, help="草稿 id")
     p.add_argument("--workspace", default=WORKSPACE)
 
     p = sub.add_parser("preview", help="只组提示词，不调 API")
@@ -2121,6 +3337,28 @@ def main():
     args = ap.parse_args()
     if args.cmd == "polish":
         print(json.dumps(polish_theme(args.theme, args.workspace), ensure_ascii=False))
+        return 0
+    if args.cmd == "article-brief":
+        src = args.text
+        # @路径 写法：整篇正文动辄几千字，直接塞 argv 会撞 Windows 32767 字符上限。
+        # 传文件的相对路径（相对 workspace）比 base64 好排查 —— 出错时看得出是哪篇。
+        if src.startswith("@"):
+            # 去掉开头的斜杠再 join —— os.path.join(root, "/drafts/x") 会把 root 整个丢掉，
+            # 变成 C:/drafts/x（Windows 上还会跑到盘根），报错却是「读不到文章」。
+            relp = src[1:].lstrip("/\\")
+            fp = os.path.join(args.workspace, relp)
+            try:
+                with io.open(fp, encoding="utf-8") as f:
+                    src = f.read()
+            except Exception as e:
+                print(json.dumps({"ok": False, "error": f"读不到文章：{e}"},
+                                 ensure_ascii=False))
+                return 0
+        print(json.dumps(article_brief(src, args.workspace), ensure_ascii=False))
+        return 0
+    if args.cmd == "illustrate-writeback":
+        print(json.dumps(write_back_illustrations(args.draft, args.workspace),
+                         ensure_ascii=False))
         return 0
     if args.cmd == "catalog":
         print(json.dumps(build_catalog(), ensure_ascii=False))

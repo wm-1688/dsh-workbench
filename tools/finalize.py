@@ -125,8 +125,12 @@ def main():
     # 3. 占位符 → 实际图片路径（**这一步以前是手动的，也是最容易漏的**）
     marks = list(re.finditer(r"!\[([^\]]+)\]\(placeholder\)", stripped))
     img_dir = os.path.join(d, "imgs")
+    # 后缀不能只认 .png：上游同一批任务会混着返回 PNG / WEBP（2026-11-17 实测 #417 就是
+    # WEBP）。只认 .png 会让「图明明生成了、却报图片数 0 与图位数不一致」，
+    # 而报错点完全看不出是格式问题。
     photos = (sorted(f for f in os.listdir(img_dir)
-                     if f.endswith(".png") and f.startswith("img-"))
+                     if os.path.splitext(f)[1].lower() in (".png", ".webp", ".jpg", ".jpeg")
+                     and f.startswith("img-"))
               if os.path.isdir(img_dir) else [])
     body = [m for m in marks if not m.group(1).startswith("封面")]
     n_inserted = 0

@@ -1,8 +1,8 @@
 {
   "name": "dsh-workbench",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "private": true,
-  "description": "墨鱼创作工作台 · DSH 插件：公众号内容生产面板（选题 / 写稿 / 审稿 / 排版 / 配图 / 发布）",
+  "description": "墨鱼创作工作台 · 公众号选题→写稿→审稿→排版→配图→发布，加绘图工作台",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -12,11 +12,15 @@
     "./client": {
       "default": "./lib/client.js"
     },
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./media/moyu-logo.png",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
   "files": [
     "lib",
+    "media",
+    "locale",
     "tools",
     "skills",
     "cordis.patch.yml",

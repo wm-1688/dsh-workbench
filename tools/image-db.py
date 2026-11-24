@@ -131,9 +131,29 @@ def now():
 
 
 def connect():
+    """开库连接。**并发生图的前提**，2026-11-16 改。
+
+    为什么要 WAL + busy_timeout：漫画流改成多线程并发出图后，同一时刻会有
+    多个 image-finish 同时写库（每个写 2 张图 + 1 条 usage + 1 条 job 更新）。
+    原来的裸 connect() 没有 WAL、没有 busy_timeout，默认 timeout 只有 5 秒，
+    实测 8 线程持锁 1 秒就开始报 `database is locked`，12 线程持锁 1 秒失败 6 个。
+    加 WAL（读写不互斥）+ busy_timeout=30s（写者排队等而不是立刻报错）后，
+    16 线程持锁 1 秒零失败。
+
+    注意 timeout 与 busy_timeout 都设：前者是 sqlite3 模块级的等待，后者是
+    SQLite 内部的 busy handler，只设一个在部分版本上不生效。
+    """
     os.makedirs(DATA_DIR, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row
+    # WAL 是库级持久设置，设一次就记住；并发下让读不被写阻塞。
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA synchronous=NORMAL")   # WAL 下 NORMAL 已足够安全，且快很多
+    except sqlite3.Error:
+        # 老库/只读挂载等情况设不上不该阻断主流程，退回默认行为即可
+        pass
     return conn
 
 
@@ -273,17 +293,27 @@ def _dispatch(conn, op, req):
             single = req.get("assetRefPath")
             refs = [single] if single else []
         params = req.get("params") or {}
+        # seriesId / panelIndex：漫画流和文章配图都要靠这两个字段归组。
+        #
+        # 2026-11-18 修：原来这里不接收这两个参数，于是 `article-images.py generate`
+        # 建完 series 再入队，jobs 的 series_id 是 NULL —— `run_series` 按 series_id
+        # 查不到任务，会报「0 镜」直接返回，一张图都不生成。
+        # 绘图工作台之所以正常，是因为它走的是另一条入队路径（series-panels）。
+        sid = req.get("seriesId")
+        pidx = req.get("panelIndex")
         cur = conn.execute(
             "INSERT INTO image_jobs (created_at,status,style_id,layout_id,color_id,theme,"
             "prompt_zh,prompt_en,model,size,quality,with_ref,ref_path,asset_ref_path,"
-            "params_json,arms,note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "params_json,arms,note,series_id,panel_index) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (now(), "queued", req.get("styleId"), req.get("layoutId"), req.get("colorId"),
              theme, req.get("promptZh"), req.get("promptEn"), req.get("model"),
              req.get("size"), req.get("quality"), 1 if req.get("withRef", True) else 0,
              req.get("refPath"),
              json.dumps(refs, ensure_ascii=False) if refs else None,
              json.dumps(params, ensure_ascii=False) if params else None,
-             req.get("arms") or "ref", req.get("note")))
+             req.get("arms") or "ref", req.get("note"),
+             int(sid) if sid is not None else None,
+             int(pidx) if pidx is not None else None))
         conn.commit()
         job = dict(conn.execute("SELECT * FROM image_jobs WHERE id=?", (cur.lastrowid,)).fetchone())
         return {"ok": True, "job": job}
@@ -317,9 +347,26 @@ def _dispatch(conn, op, req):
         row = conn.execute("SELECT * FROM image_jobs WHERE id=?", (jid,)).fetchone()
         if row is None:
             return {"ok": False, "error": f"job {jid} not found"}
-        conn.execute("UPDATE image_jobs SET status='running', updated_at=? WHERE id=?",
-                     (now(), jid))
+        # **状态闸门**（2026-11-16 加）：原来只无条件 UPDATE 成 running，
+        # 同一 jobId 连点两次就会起两个进程、各调一次生图接口、各记一笔账。
+        # 改成并发出图后，前端轮询刷新快、按钮更容易被连点，这个洞必须堵。
+        # 用条件 UPDATE + rowcount 判断，靠 SQLite 的原子性挡住并发双击：
+        #   - queued：正常入队 → 放行
+        #   - failed：允许重试（失败任务重跑是常见诉求）
+        #   - running / done：拒绝，绝不重复计费
+        cur = conn.execute(
+            "UPDATE image_jobs SET status='running', updated_at=? "
+            "WHERE id=? AND status IN ('queued','failed')", (now(), jid))
         conn.commit()
+        if cur.rowcount == 0:
+            st = row["status"]
+            if st == "running":
+                return {"ok": False, "error": f"任务 #{jid} 正在生成中，不要重复提交（会重复计费）",
+                        "status": st}
+            if st == "done":
+                return {"ok": False, "error": f"任务 #{jid} 已完成；要再出一张请新建任务",
+                        "status": st}
+            return {"ok": False, "error": f"任务 #{jid} 当前状态 {st}，不能开始", "status": st}
         return {"ok": True, "job": dict(conn.execute(
             "SELECT * FROM image_jobs WHERE id=?", (jid,)).fetchone())}
 
@@ -494,6 +541,10 @@ def _dispatch(conn, op, req):
 
     if op == "image-reap":
         # 进程被杀 / DSH 重启后，running 会永远挂着；超过阈值的置为 failed
+        # ⚠️ cutoff 由调用方（lib/index.js reapStaleImageJobs）算好传进来。
+        # 那边 2026-11-16 已从 15 分钟放宽到 45 分钟：加出图重试后单任务最坏
+        # 约 21 分钟，15 分钟会把**正在重试**的任务误判成超时失败。
+        # 改这里的语义前先看那边的注释，两处必须一起动。
         cutoff = str(req.get("cutoff") or "")
         if not cutoff:
             return {"ok": False, "error": "cutoff required"}

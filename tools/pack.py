@@ -33,7 +33,9 @@ DIST = os.path.join(os.path.dirname(PLUGIN), "dist")
 # skills/ 随包分发（2026-11 起改为整包）：装的时候 install.py 直接复制到
 # $DSH_HOME/skills，不必联网。fetch-skills.py 只作为包内缺技能时的兜底。
 # assets/ 是 README 里引用的截图与二维码，缺了 README 就是一片破图。
-INCLUDE_DIRS = ["lib", "tools", "docs", "writing-dna", "skills", "assets"]
+# locale/ 是 DSH 插件详情页的标题与简介，media/ 是插件图标 ——
+# 两者都由 package.json 的 exports 指向，缺了详情页没有名字和图标。
+INCLUDE_DIRS = ["lib", "tools", "docs", "writing-dna", "skills", "assets", "locale", "media"]
 # 根目录下进包的文件类型
 INCLUDE_EXTS = {".md", ".json", ".yml", ".yaml", ".py", ".txt"}
 # 无论在哪都排除

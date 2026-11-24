@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  墨鱼创作工作台 LOGO（矢量版）
+
+  为什么另画一份 SVG 而不是直接用那张 1024 png：
+    · 侧边栏图标只有 18–26px，PNG 缩到这个尺寸会糊；SVG 任意尺寸都清晰
+    · 那张 PNG 764KB（压到 256 也要 69KB），内联进 client.js 太占地方
+    · 插件图标（Plugin Manager 那张）仍用 PNG，见 media/moyu-logo.png
+
+  图形与 PNG 一致：黑色圆头章鱼 + 青色菱形装饰（顶部 1 + 两侧 2）+ 粉色腮红 + 白色大眼。
+  viewBox 100×100，图形占满视区，四周几乎无留白 —— 侧边栏小尺寸下才看得清。
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <!-- 头部（含触手）：整体黑色轮廓 -->
+  <path fill="#1A1A1A" d="
+    M50 12
+    C31 12 16 27 16 46
+    C16 57 20 66 27 72
+    L27 78 C27 82 30 85 34 85 C38 85 41 82 41 78 L41 74
+    C44 76 47 77 50 77
+    C53 77 56 76 59 74 L59 78
+    C59 82 62 85 66 85 C70 85 73 82 73 78 L73 72
+    C80 66 84 57 84 46
+    C84 27 69 12 50 12 Z"/>
+
+  <!-- 顶部菱形装饰 -->
+  <path fill="#3DBFA0" d="M50 20 L57 27 L50 34 L43 27 Z"/>
+  <!-- 左右两侧菱形装饰（略微外翻） -->
+  <path fill="#3DBFA0" d="M25 30 L32 25 L34 33 L27 38 Z"/>
+  <path fill="#3DBFA0" d="M75 30 L68 25 L66 33 L73 38 Z"/>
+
+  <!-- 腮红 -->
+  <ellipse cx="30" cy="62" rx="6" ry="4" fill="#F98F72"/>
+  <ellipse cx="70" cy="62" rx="6" ry="4" fill="#F98F72"/>
+
+  <!-- 眼睛：白色底 + 黑色瞳孔（瞳孔里留白高光） -->
+  <ellipse cx="38" cy="50" rx="10" ry="11" fill="#FFFFFF"/>
+  <ellipse cx="62" cy="50" rx="10" ry="11" fill="#FFFFFF"/>
+  <path fill="#1A1A1A" d="
+    M38 43 C35 43 33 46 33 50 C33 54 35 57 38 57 C41 57 43 54 43 50 C43 46 41 43 38 43 Z
+    M62 43 C59 43 57 46 57 50 C57 54 59 57 62 57 C65 57 67 54 67 50 C67 46 65 43 62 43 Z"/>
+  <!-- 瞳孔高光 -->
+  <ellipse cx="35" cy="47" rx="2.6" ry="3" fill="#FFFFFF"/>
+  <ellipse cx="59" cy="47" rx="2.6" ry="3" fill="#FFFFFF"/>
+
+  <!-- 眼睛上方的眉线（两道小弧） -->
+  <path d="M33 38 Q38 35 43 38" stroke="#FFFFFF" stroke-width="1.6"
+        fill="none" stroke-linecap="round" opacity="0.9"/>
+  <path d="M57 38 Q62 35 67 38" stroke="#FFFFFF" stroke-width="1.6"
+        fill="none" stroke-linecap="round" opacity="0.9"/>
+
+  <!-- 微笑 -->
+  <path d="M46 62 Q50 66 54 62" stroke="#FFFFFF" stroke-width="1.8"
+        fill="none" stroke-linecap="round"/>
+</svg>
